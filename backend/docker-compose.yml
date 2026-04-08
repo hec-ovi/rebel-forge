@@ -1,0 +1,45 @@
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: rebel_forge
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  api:
+    build: .
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+    volumes:
+      - ./data:/app/data
+      - ./instructions:/app/instructions:ro
+    command: >
+      sh -c "alembic upgrade head &&
+      uvicorn rebel_forge_backend.main:app --host 0.0.0.0 --port 8080"
+
+  worker:
+    build: .
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+    volumes:
+      - ./data:/app/data
+      - ./instructions:/app/instructions:ro
+    command: >
+      sh -c "alembic upgrade head &&
+      python -m rebel_forge_backend.worker"
+
+volumes:
+  postgres_data:
