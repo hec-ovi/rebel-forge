@@ -1,0 +1,21 @@
+Copyright (c) 2026 Hector Oviedo
+
+All rights reserved.
+
+This source code is published for demonstration and portfolio review
+purposes only. No rights are granted to use, copy, modify, merge, publish,
+distribute, sublicense, sell, or prepare derivative works of this software,
+in whole or in part, without prior written permission from the copyright
+holder.
+
+Third-party dependencies (FastAPI, Next.js, React, Tailwind CSS, SQLAlchemy,
+psycopg, and others listed in backend/pyproject.toml and
+frontend/package.json) retain their original upstream licenses. The
+restriction above applies only to the original code authored in this
+repository.
+
+External services referenced by this project (including vLLM and ComfyUI)
+are consumed over network APIs and are not redistributed or modified by
+this repository.
+
+For commercial inquiries: https://linkedin.com/in/hec-ovi
