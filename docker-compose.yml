@@ -7,39 +7,62 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - ./backend/data/pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d rebel_forge"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
 
   api:
     build: ./backend
     restart: unless-stopped
+    init: true
     network_mode: host
     env_file:
-      - ./backend/.env
+      - path: ./backend/.env
+        required: false
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     volumes:
       - ./backend/data:/app/data
-      - ./backend/instructions:/app/instructions:ro
+      - type: bind
+        source: ./backend/.env
+        target: /app/.env
+        bind:
+          create_host_path: false
     command: >
       sh -c "alembic upgrade head &&
-      uvicorn rebel_forge_backend.main:app --host 0.0.0.0 --port 8080"
+      uvicorn rebel_forge_backend.main:app --host 127.0.0.1 --port 8080"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
 
   worker:
     build: ./backend
     restart: unless-stopped
+    init: true
     network_mode: host
     env_file:
-      - ./backend/.env
+      - path: ./backend/.env
+        required: false
     depends_on:
-      - postgres
+      api:
+        condition: service_healthy
     volumes:
       - ./backend/data:/app/data
-      - ./backend/instructions:/app/instructions:ro
-    command: >
-      sh -c "alembic upgrade head &&
-      python -m rebel_forge_backend.worker"
+    command: python -m rebel_forge_backend.worker
 
   frontend:
     build:
@@ -47,6 +70,7 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
-      - api
+      api:
+        condition: service_healthy

@@ -1,60 +1,78 @@
-#!/bin/bash
-# Start all Rebel Forge services in one terminal with labeled output
-# Usage: ./dev.sh
+#!/usr/bin/env bash
 
-trap 'kill 0; exit' EXIT INT TERM
+set -Eeuo pipefail
 
-DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BACKEND_DIR="$PROJECT_DIR/backend"
+FRONTEND_DIR="$PROJECT_DIR/frontend"
+CHILD_PIDS=()
 
-# Kill stale processes
-pkill -f "next dev" 2>/dev/null
-pkill -f "next-server" 2>/dev/null
-pkill -f "uvicorn rebel_forge" 2>/dev/null
-pkill -f "rebel_forge_backend.worker" 2>/dev/null
-lsof -ti :8080 | xargs kill -9 2>/dev/null
-lsof -ti :3000 | xargs kill -9 2>/dev/null
-rm -f "$DIR/frontend/.next/dev/lock" 2>/dev/null
-sleep 1
+cleanup() {
+  trap - EXIT INT TERM
+  if ((${#CHILD_PIDS[@]})); then
+    kill "${CHILD_PIDS[@]}" 2>/dev/null || true
+    wait "${CHILD_PIDS[@]}" 2>/dev/null || true
+  fi
+}
 
-echo "Starting Rebel Forge..."
-echo ""
+require_command() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "Missing required command: $1" >&2
+    exit 1
+  fi
+}
 
-# Ensure Postgres is running
-if ! docker ps --format '{{.Names}}' | grep -q rebel-forge-postgres; then
-  echo "[DB] Starting PostgreSQL..."
-  docker start rebel-forge-postgres 2>/dev/null || \
-    docker run -d --name rebel-forge-postgres \
-      -e POSTGRES_DB=rebel_forge \
-      -e POSTGRES_USER=postgres \
-      -e POSTGRES_PASSWORD=postgres \
-      -e PGDATA=/var/lib/postgresql/data/pgdata \
-      -v "$DIR/backend/data/pgdata:/var/lib/postgresql/data/pgdata" \
-      -p 5432:5432 \
-      pgvector/pgvector:pg17
-  sleep 3
+trap cleanup EXIT INT TERM
+
+require_command docker
+require_command npm
+require_command uv
+
+if [[ ! -f "$BACKEND_DIR/.env" ]]; then
+  echo "Missing backend/.env. Create it with:" >&2
+  echo "  cp backend/.env.example backend/.env" >&2
+  exit 1
 fi
-echo "[DB] PostgreSQL running on :5432"
 
-# Backend API (auto-reloads on file changes)
-cd "$DIR/backend" && .venv/bin/uvicorn rebel_forge_backend.main:app \
-  --host 0.0.0.0 --port 8080 --reload 2>&1 | sed 's/^/[API]    /' &
+echo "Synchronizing dependencies..."
+(
+  cd "$BACKEND_DIR"
+  uv sync --locked
+)
+(
+  cd "$FRONTEND_DIR"
+  npm ci
+)
 
-# Worker (auto-restart on crash)
-cd "$DIR/backend" && while true; do
-  .venv/bin/python -m rebel_forge_backend.worker 2>&1 | sed 's/^/[WORKER] /'
-  echo "[WORKER] Restarting in 2s..."
-  sleep 2
-done &
+echo "Starting PostgreSQL and applying migrations..."
+docker compose --project-directory "$PROJECT_DIR" up -d --wait postgres
+(
+  cd "$BACKEND_DIR"
+  uv run alembic upgrade head
+)
 
-# Frontend (Next.js dev with HMR)
-cd "$DIR/frontend" && npm run dev 2>&1 | sed 's/^/[NEXT]   /' &
+echo "Starting API, worker, and frontend..."
+(
+  cd "$BACKEND_DIR"
+  exec uv run uvicorn rebel_forge_backend.main:app --host 127.0.0.1 --port 8080 --reload
+) &
+CHILD_PIDS+=("$!")
 
-echo ""
-echo "  Frontend:  http://localhost:3000"
-echo "  API:       http://localhost:8080"
-echo "  API docs:  http://localhost:8080/docs"
-echo ""
-echo "Press Ctrl+C to stop all."
-echo ""
+(
+  cd "$BACKEND_DIR"
+  exec uv run python -m rebel_forge_backend.worker
+) &
+CHILD_PIDS+=("$!")
 
-wait
+(
+  cd "$FRONTEND_DIR"
+  exec npm run dev
+) &
+CHILD_PIDS+=("$!")
+
+echo "Frontend: http://localhost:3000"
+echo "API:      http://localhost:8080"
+echo "Docs:     http://localhost:8080/docs"
+echo "Press Ctrl+C to stop the application processes. PostgreSQL remains running."
+
+wait -n "${CHILD_PIDS[@]}"
