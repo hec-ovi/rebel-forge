@@ -1,13 +1,16 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import Link from "next/link";
+import Image from "next/image";
+import { useRouter } from "next/navigation";
 import {
   Send, Loader2, Sparkles, Search, Trash2, Wrench,
   CheckCircle2, Heart, Zap, Settings2, ExternalLink, Database,
   Eye, User, ImageIcon, Brain,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { apiFetch, API_BASE } from "@/lib/api";
+import { apiFetch, API_BASE, clearAuthSession } from "@/lib/api";
 import { getPlatform } from "@/lib/platforms";
 
 interface Message {
@@ -59,13 +62,13 @@ const activeLabels: Record<string, string> = {
   generate: "Generate", search: "Search", approve: "Approve", publish: "Publish",
   heartbeat: "Heartbeat", setup_platform: "Setup Platform", update_brand: "Update Brand",
   save_onboarding: "Save Profile", query_drafts: "Query", generate_image: "Image Gen",
-  recall_training: "Recalling Training",
+  recall_training: "Loading Feedback Context",
 };
 const doneLabels: Record<string, string> = {
   generate: "Generated", search: "Searched", approve: "Approved", publish: "Published",
   heartbeat: "Heartbeat Done", setup_platform: "Platform Ready", update_brand: "Brand Updated",
   save_onboarding: "Profile Saved", query_drafts: "Queried", generate_image: "Image Ready",
-  recall_training: "Training Recalled",
+  recall_training: "Feedback Context Loaded",
 };
 const failedLabels: Record<string, string> = {
   generate: "Generation Failed", search: "Search Failed", approve: "Approval Failed",
@@ -132,32 +135,38 @@ function ProgressBar({ pct }: { pct: number }) {
   );
 }
 
-/* ============================================
-   ToolCard — new unified style
-   ============================================ */
-function ToolCard({ msg, mode, onSummary }: { msg: Message; mode: string; onSummary?: (s: Record<string, unknown>) => void }) {
-  const action = msg.action!;
-  const type = action.type;
-  const status = action.status;
-  const isFailed = status === "failed";
-  const isInProgress = status === "running" || status === "queued";
-  const data = msg.toolData || {};
+interface ToolBubbleView {
+  type: string;
+  status: ActionResult["status"];
+  isFailed: boolean;
+  isInProgress: boolean;
+  data: Record<string, unknown>;
+  icon: React.ElementType;
+  draftPlatform: ReturnType<typeof getPlatform> | null;
+  bubbleBorder: string;
+  bubbleGradient: string;
+  toolLabel: string;
+  description: string;
+  phase: string;
+}
 
-  // For generate/generate_image, use platform icon + color
-  const draftPlatform = data.platform ? getPlatform(String(data.platform)) : null;
-  const Icon = (type === "generate" || type === "generate_image") && draftPlatform ? draftPlatform.icon : (toolIcons[type] || Sparkles);
-  const platformAccent = (type === "generate" || type === "generate_image") && draftPlatform ? draftPlatform.accent : "";
+function ToolBubble({
+  view,
+  children,
+  desc,
+  ph,
+}: {
+  view: ToolBubbleView;
+  children?: React.ReactNode;
+  desc?: string;
+  ph?: string;
+}) {
+  const {
+    type, status, isFailed, isInProgress, data, icon: Icon, draftPlatform,
+    bubbleBorder, bubbleGradient, toolLabel, description, phase,
+  } = view;
 
-  const bubbleBorder = isFailed ? "border-danger/[0.12]" : !isInProgress ? "border-success/[0.12]" : (toolBorderColors[type] || "border-foreground/[0.07]");
-  const bubbleGradient = isFailed ? "from-danger/15" : !isInProgress ? "from-success/15" : (toolGradientColors[type] || "from-accent/15");
-  const toolLabel = isFailed ? (failedLabels[type] || "Failed") : !isInProgress ? (doneLabels[type] || "Done") : (activeLabels[type] || type);
-
-  // Split content: "Generating 2 X drafts — Sending to AI model..." → description + phase
-  const parts = msg.content.split(" — ");
-  const description = parts[0] || msg.content;
-  const phase = parts.length > 1 ? parts[1] : (isFailed ? "Failed" : !isInProgress ? "Completed" : "");
-
-  const ToolBubble = ({ children, desc, ph }: { children?: React.ReactNode; desc?: string; ph?: string }) => (
+  return (
     <div className="flex gap-3">
       <AgentOrbStatic />
       <div className={`flex-1 relative rounded-sm rounded-tr-2xl rounded-br-2xl rounded-bl-2xl overflow-hidden bg-foreground/[0.04] backdrop-blur-xl border ${bubbleBorder}`}>
@@ -165,7 +174,7 @@ function ToolCard({ msg, mode, onSummary }: { msg: Message; mode: string; onSumm
         {isInProgress && <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(ellipse_at_25%_50%,oklch(0.7_0.15_200/0.03),transparent_55%)]" />}
         <div className="relative p-4 space-y-3">
           <div className="flex items-center gap-2">
-            {draftPlatform && (() => { const PI = draftPlatform.icon; return <PI className={`h-4 w-4 ${draftPlatform.accent}`} />; })()}
+            {draftPlatform && (() => { const PlatformIcon = draftPlatform.icon; return <PlatformIcon className={`h-4 w-4 ${draftPlatform.accent}`} />; })()}
             <p className={`text-[14px] font-bold ${isFailed ? "text-danger" : !isInProgress ? "text-success" : "text-foreground"}`}>{toolLabel}</p>
             {draftPlatform && <span className={`text-[10px] ${draftPlatform.accent} opacity-60`}>{draftPlatform.label}</span>}
           </div>
@@ -182,7 +191,7 @@ function ToolCard({ msg, mode, onSummary }: { msg: Message; mode: string; onSumm
                 <div className="h-[22px] relative overflow-hidden">
                   <div className="absolute left-0 top-0 flex items-center gap-1.5 text-[11.5px] text-muted-foreground whitespace-nowrap" style={{ animation: "status-line-enter 0.4s ease both" }}>
                     <span style={isFailed ? { color: "var(--danger)" } : !isInProgress ? { color: "var(--success)" } : undefined}>{ph || phase}</span>
-                    {isInProgress && <span className="inline-flex gap-[3px] items-center">{[0, 0.15, 0.3].map((d, i) => <span key={i} className="w-[3px] h-[3px] rounded-full bg-current" style={{ animation: `dots-bounce 1.4s ease infinite ${d}s` }} />)}</span>}
+                    {isInProgress && <span className="inline-flex gap-[3px] items-center">{[0, 0.15, 0.3].map((delay, index) => <span key={index} className="w-[3px] h-[3px] rounded-full bg-current" style={{ animation: `dots-bounce 1.4s ease infinite ${delay}s` }} />)}</span>}
                   </div>
                 </div>
               )}
@@ -191,18 +200,17 @@ function ToolCard({ msg, mode, onSummary }: { msg: Message; mode: string; onSumm
                 <span className={isFailed ? "text-danger" : isInProgress ? "text-warning" : "text-success"}>{isInProgress ? "60%" : isFailed ? "error" : "done"}</span>
                 <span className="w-px h-2 bg-foreground/5" />
                 {!isInProgress && !isFailed && (type === "generate" || type === "generate_image") ? (
-                  <a href={data.draft_ids && (data.draft_ids as string[]).length > 0 ? `/drafts/${(data.draft_ids as string[])[0]}` : data.draft_id ? `/drafts/${data.draft_id}` : "/drafts"} className="text-accent hover:underline cursor-pointer" onClick={(e) => {
+                  <Link href={data.draft_ids && (data.draft_ids as string[]).length > 0 ? `/drafts/${(data.draft_ids as string[])[0]}` : data.draft_id ? `/drafts/${data.draft_id}` : "/drafts"} className="text-accent hover:underline cursor-pointer" onClick={(event) => {
                     if (!data.draft_ids && !data.draft_id && data.job_id) {
-                      e.preventDefault();
-                      apiFetch<{ result_payload?: { draft_ids?: string[] } }>(`/v1/jobs/${data.job_id}`).then((r) => {
-                        const ids = r.result_payload?.draft_ids;
-                        if (ids && ids.length > 0) window.location.href = `/drafts/${ids[0]}`;
-                        else window.location.href = "/drafts";
+                      event.preventDefault();
+                      apiFetch<{ result_payload?: { draft_ids?: string[] } }>(`/v1/jobs/${data.job_id}`).then((result) => {
+                        const ids = result.result_payload?.draft_ids;
+                        window.location.href = ids?.length ? `/drafts/${ids[0]}` : "/drafts";
                       }).catch(() => { window.location.href = "/drafts"; });
                     }
-                  }}>view</a>
+                  }}>view</Link>
                 ) : !isInProgress && !isFailed && type === "recall_training" ? (
-                  <a href="/training" className="text-accent hover:underline cursor-pointer">view</a>
+                  <Link href="/training" className="text-accent hover:underline cursor-pointer">view</Link>
                 ) : (
                   <span>{isInProgress ? "est. 3s" : isFailed ? "failed" : "completed"}</span>
                 )}
@@ -214,12 +222,41 @@ function ToolCard({ msg, mode, onSummary }: { msg: Message; mode: string; onSumm
       </div>
     </div>
   );
+}
+
+/* ============================================
+   ToolCard — new unified style
+   ============================================ */
+function ToolCard({ msg, mode }: { msg: Message; mode: string }) {
+  const action = msg.action!;
+  const type = action.type;
+  const status = action.status;
+  const isFailed = status === "failed";
+  const isInProgress = status === "running" || status === "queued";
+  const data = msg.toolData || {};
+
+  // For generate/generate_image, use platform icon + color
+  const draftPlatform = data.platform ? getPlatform(String(data.platform)) : null;
+  const Icon = (type === "generate" || type === "generate_image") && draftPlatform ? draftPlatform.icon : (toolIcons[type] || Sparkles);
+  const bubbleBorder = isFailed ? "border-danger/[0.12]" : !isInProgress ? "border-success/[0.12]" : (toolBorderColors[type] || "border-foreground/[0.07]");
+  const bubbleGradient = isFailed ? "from-danger/15" : !isInProgress ? "from-success/15" : (toolGradientColors[type] || "from-accent/15");
+  const toolLabel = isFailed ? (failedLabels[type] || "Failed") : !isInProgress ? (doneLabels[type] || "Done") : (activeLabels[type] || type);
+
+  // Split content: "Generating 2 X drafts — Sending to AI model..." → description + phase
+  const parts = msg.content.split(" — ");
+  const description = parts[0] || msg.content;
+  const phase = parts.length > 1 ? parts[1] : (isFailed ? "Failed" : !isInProgress ? "Completed" : "");
+
+  const view: ToolBubbleView = {
+    type, status, isFailed, isInProgress, data, icon: Icon, draftPlatform,
+    bubbleBorder, bubbleGradient, toolLabel, description, phase,
+  };
 
   // === Search results ===
   if (type === "search" && status === "completed" && data.results) {
     const results = data.results as Array<{ title: string; url: string; description: string }>;
     return (
-      <ToolBubble desc={`Found ${results.length} results for "${String(data.query || "")}"`} ph="Search complete">
+      <ToolBubble view={view} desc={`Found ${results.length} results for "${String(data.query || "")}"`} ph="Search complete">
         <div className="rounded-lg bg-background/30 border border-foreground/[0.04] p-3 space-y-2.5">
           {results.slice(0, 5).map((r, i) => (
             <div key={i} className="space-y-0.5">
@@ -238,7 +275,7 @@ function ToolCard({ msg, mode, onSummary }: { msg: Message; mode: string; onSumm
   // === Publish with URL ===
   if (type === "publish" && status === "completed" && data.url) {
     return (
-      <ToolBubble desc="Published successfully." ph="Live on platform">
+      <ToolBubble view={view} desc="Published successfully." ph="Live on platform">
         <a href={String(data.url)} target="_blank" rel="noopener noreferrer"
           className="flex items-center gap-2 rounded-lg bg-success/5 border border-success/10 px-3 py-2 text-[12px] text-success hover:bg-success/10 transition-colors">
           <Zap className="h-3.5 w-3.5" /><span className="truncate flex-1">{String(data.url)}</span><ExternalLink className="h-3 w-3 shrink-0" />
@@ -252,7 +289,7 @@ function ToolCard({ msg, mode, onSummary }: { msg: Message; mode: string; onSumm
     const profile = data.profile as Record<string, unknown>;
     const firstPosts = profile.first_posts as Array<Record<string, unknown>> | undefined;
     return (
-      <ToolBubble desc="Platform profile generated." ph="Profile saved">
+      <ToolBubble view={view} desc="Platform profile generated." ph="Profile saved">
         <div className="rounded-lg bg-background/30 border border-foreground/[0.04] p-3 space-y-1.5 text-[12px]">
           {[["Name", profile.display_name], ["Handle", profile.handle], ["Bio", profile.bio], ["Topics", profile.topics], ["Strategy", profile.content_strategy]]
             .filter(([, v]) => !!v).map(([label, value]) => (
@@ -281,7 +318,7 @@ function ToolCard({ msg, mode, onSummary }: { msg: Message; mode: string; onSumm
     if (p.goals) rows.push(["Goal", String(p.goals)]);
     if (p.inspiration) rows.push(["Inspired by", String(p.inspiration)]);
     return (
-      <ToolBubble desc="Brand profile saved." ph="Onboarding complete">
+      <ToolBubble view={view} desc="Brand profile saved." ph="Onboarding complete">
         <div className="rounded-lg bg-background/30 border border-success/[0.08] p-3 space-y-1.5 text-[12px]">
           {rows.map(([label, value]) => (
             <div key={label}><span className="text-muted-foreground">{label}:</span> <span className="text-foreground ml-1">{value}</span></div>
@@ -304,7 +341,7 @@ function ToolCard({ msg, mode, onSummary }: { msg: Message; mode: string; onSumm
   if (type === "query_drafts" && status === "completed" && data.results) {
     const results = data.results as Array<Record<string, string>>;
     return (
-      <ToolBubble desc={`Found ${results.length} drafts.`} ph="Query complete">
+      <ToolBubble view={view} desc={`Found ${results.length} drafts.`} ph="Query complete">
         <div className="rounded-lg bg-background/30 border border-foreground/[0.04] p-3 space-y-2">
           {results.slice(0, 5).map((r, i) => (
             <div key={i} className="text-[11px] flex items-center gap-2">
@@ -331,7 +368,7 @@ function ToolCard({ msg, mode, onSummary }: { msg: Message; mode: string; onSumm
       const imgGenerating = !imgReady && !imgFailed;
 
       return (
-        <ToolBubble desc={description} ph={imgReady ? (phase || "Completed") : imgFailed ? "Image failed" : "Draft ready"}>
+        <ToolBubble view={view} desc={description} ph={imgReady ? (phase || "Completed") : imgFailed ? "Image failed" : "Draft ready"}>
           {/* Image status card */}
           <div className={`rounded-xl overflow-hidden relative ${imgReady ? "bg-background/20 border border-success/[0.06]" : imgFailed ? "bg-background/20 border border-danger/[0.06]" : "bg-background/30 border border-accent/5"}`}>
             {imgGenerating && <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(ellipse_at_25%_50%,oklch(0.7_0.15_200/0.04),transparent_55%)]" style={{ animation: "agent-pulse 8s ease-in-out infinite" }} />}
@@ -375,7 +412,7 @@ function ToolCard({ msg, mode, onSummary }: { msg: Message; mode: string; onSumm
           {/* Thumbnail when ready */}
           {imgReady && hasImage && (
             <button onClick={() => window.open(String(data.image_url), "_blank")} className="rounded-lg overflow-hidden cursor-pointer hover:opacity-90 transition-opacity">
-              <img src={String(data.image_url)} alt="Generated" className="max-h-36 object-cover rounded-lg" />
+              <Image src={String(data.image_url)} alt="Generated content preview" width={640} height={360} unoptimized className="max-h-36 object-cover rounded-lg" />
             </button>
           )}
         </ToolBubble>
@@ -388,7 +425,7 @@ function ToolCard({ msg, mode, onSummary }: { msg: Message; mode: string; onSumm
     const plat = getPlatform(String(data.platform || ""));
     const PIcon = plat.icon;
     return (
-      <ToolBubble desc={`Recalled training for ${plat.label}.`} ph="Training loaded">
+      <ToolBubble view={view} desc={`Loaded saved feedback for ${plat.label}.`} ph="Context loaded">
         <div className="rounded-lg bg-background/30 border border-warning/[0.08] p-3 space-y-1.5 text-[12px]">
           <div className="flex items-center gap-2">
             <PIcon className={`h-3.5 w-3.5 ${plat.accent}`} />
@@ -397,9 +434,9 @@ function ToolCard({ msg, mode, onSummary }: { msg: Message; mode: string; onSumm
           <div className="flex items-center gap-4 text-[11px] text-muted-foreground">
             <span>{String(data.corrections_count || 0)} corrections</span>
             {Boolean(data.has_style_guide) && <span className="text-success">style guide loaded</span>}
-            {Boolean(data.has_style_learning) && <span className="text-info">writing patterns loaded</span>}
-            {!data.corrections_count && !data.has_style_guide && !data.has_style_learning && (
-              <span className="text-muted-foreground/50">no training data yet</span>
+            {Boolean(data.has_imported_style_context) && <span className="text-info">imported style examples loaded</span>}
+            {!data.corrections_count && !data.has_style_guide && !data.has_imported_style_context && (
+              <span className="text-muted-foreground/50">no saved feedback context yet</span>
             )}
           </div>
         </div>
@@ -410,14 +447,14 @@ function ToolCard({ msg, mode, onSummary }: { msg: Message; mode: string; onSumm
   // === Error ===
   if (isFailed) {
     return (
-      <ToolBubble>
-        {type === "publish" && <a href="/drafts" className="text-[11px] text-accent hover:underline">Go to Content to approve first</a>}
+      <ToolBubble view={view}>
+        {type === "publish" && <Link href="/drafts" className="text-[11px] text-accent hover:underline">Go to Content to approve first</Link>}
       </ToolBubble>
     );
   }
 
   // === Default (in-progress or completed) ===
-  return <ToolBubble />;
+  return <ToolBubble view={view} />;
 }
 
 /* ============================================
@@ -436,6 +473,7 @@ const TOOL_TYPE_MAP: Record<string, string> = {
 };
 
 export function Chat({ mode, onSummary, initialMessage }: ChatProps) {
+  const router = useRouter();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
@@ -553,7 +591,7 @@ export function Chat({ mode, onSummary, initialMessage }: ChatProps) {
         if (r.status === "completed") {
           const draftIds = r.result_payload?.draft_ids || [];
           const mediaJobIds = r.result_payload?.media_job_ids || [];
-          let imageUrl = r.result_payload?.image_url || "";
+          const imageUrl = r.result_payload?.image_url || "";
 
           // Mark draft as complete
           setMessages((p) => p.map((m) => m.action?.detail === jobId ? {
@@ -637,18 +675,22 @@ export function Chat({ mode, onSummary, initialMessage }: ChatProps) {
         headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body: JSON.stringify({ messages: apiMessages, mode }),
       });
+      if (res.status === 401) {
+        clearAuthSession();
+        router.replace("/login");
+        return;
+      }
       if (!res.ok) throw new Error(`API error: ${res.status} ${res.statusText}`);
       const reader = res.body?.getReader();
       const decoder = new TextDecoder("utf-8", { fatal: false });
       if (!reader) throw new Error("No reader");
       let fullContent = "";
       let hasContent = false;
-      let skipNextContent = false;
       let lineBuffer = "";
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
-        lineBuffer += decoder.decode(value, { stream: true });
+        if (value) lineBuffer += decoder.decode(value, { stream: !done });
+        if (done) lineBuffer += `${decoder.decode()}\n`;
         const lines = lineBuffer.split("\n");
         lineBuffer = lines.pop() || ""; // keep incomplete last line in buffer
         for (const line of lines) {
@@ -704,24 +746,25 @@ export function Chat({ mode, onSummary, initialMessage }: ChatProps) {
                     if (s.last_run && s.last_result) {
                       const t = new Date(s.last_run).getTime();
                       if (t > parseInt(hbId.split("_")[1])) {
-                        const dc = (s.last_result as Record<string, unknown>).drafts_created || 0;
-                        const sc = (s.last_result as Record<string, unknown>).scout as Record<string, unknown> | undefined;
+                        const result = s.last_result as Record<string, unknown>;
+                        const queued = typeof result.drafts_queued === "number" ? result.drafts_queued : null;
+                        const created = typeof result.drafts_created === "number" ? result.drafts_created : 0;
+                        const draftOutcome = queued === null ? `${created} drafts created.` : `${queued} drafts queued.`;
+                        const sc = result.scout as Record<string, unknown> | undefined;
                         const trends = Array.isArray(sc?.trends) ? (sc.trends as string[]).slice(0, 3).join(", ") : "";
-                        setMessages((p) => p.map((m) => m.action?.detail === hbId ? { ...m, content: `Heartbeat done! ${dc} drafts.${trends ? ` Trends: ${trends}` : ""}`, action: { ...m.action!, status: "completed" as const } } : m));
+                        setMessages((p) => p.map((m) => m.action?.detail === hbId ? { ...m, content: `Heartbeat done! ${draftOutcome}${trends ? ` Trends: ${trends}` : ""}`, action: { ...m.action!, status: "completed" as const } } : m));
                         return;
                       }
                     }
                     setTimeout(() => pollHb(attempts + 1), 5000);
                   } catch { setTimeout(() => pollHb(attempts + 1), 5000); }
                 };
-                setTimeout(() => pollHb(0), 3000);
+                setTimeout(() => pollHb(0), 0);
               }
 
-              skipNextContent = true;
               fullContent = "";
               hasContent = false;
             } else if (parsed.content) {
-              if (skipNextContent) { skipNextContent = false; continue; }
               fullContent += parsed.content;
               hasContent = true;
               addedPlaceholder = true;
@@ -740,13 +783,17 @@ export function Chat({ mode, onSummary, initialMessage }: ChatProps) {
             }
           } catch {}
         }
+        if (done) break;
       }
       if (mode === "onboarding" && onSummary && fullContent && fullContent.includes("```json")) {
         const m = fullContent.match(/```json\s*(\{[\s\S]*?\})\s*```/);
         if (m) { try { const s = JSON.parse(m[1]); if (s.summary) { onSummary(s); setMessages((p) => { const u = [...p]; u[u.length - 1] = { role: "assistant", content: fullContent.replace(/```json[\s\S]*?```/g, "").trim() }; return u; }); } } catch {} }
       }
     } catch {
-      setMessages((p) => { const u = [...p]; u[u.length - 1] = { role: "assistant", content: "Couldn't connect. Is the LLM running?" }; return u; });
+      setMessages((previous) => [
+        ...previous,
+        { role: "assistant", content: "Couldn't connect. Is the LLM running?" },
+      ]);
     } finally {
       setStreaming(false);
       // Auto-focus input after response
@@ -785,7 +832,7 @@ export function Chat({ mode, onSummary, initialMessage }: ChatProps) {
                 return (
                   <motion.div key={i} initial={{ opacity: 0, y: 18, filter: "blur(6px)" }} animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
                     transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }} className="space-y-1">
-                    <ToolCard msg={msg} mode={mode} onSummary={onSummary} />
+                    <ToolCard msg={msg} mode={mode} />
                     {tts && <span className="text-[9px] text-muted-foreground/30 tabular-nums ml-12">{tts}</span>}
                   </motion.div>
                 );
@@ -858,14 +905,15 @@ export function Chat({ mode, onSummary, initialMessage }: ChatProps) {
       {/* Input */}
       <div className="relative shrink-0 border-t border-border/30 bg-surface px-4 py-3">
         <div className="max-w-2xl mx-auto flex items-end gap-2">
-          <button onClick={clearChat} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors" title="Clear chat">
+          <button onClick={clearChat} aria-label="Clear chat" className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">
             <Trash2 className="h-4 w-4" />
           </button>
           <textarea ref={textareaRef} value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={handleKeyDown}
             placeholder={mode === "onboarding" ? "Tell me about your brand..." : "Ask anything or say 'generate 3 posts about...'"}
+            aria-label="Chat message"
             className="flex-1 min-h-9 max-h-32 rounded-md border border-input bg-background px-4 py-2 text-[13px] placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-accent/30 resize-none"
             rows={1} disabled={streaming} />
-          <button onClick={handleSend} disabled={!input.trim() || streaming}
+          <button onClick={handleSend} disabled={!input.trim() || streaming} aria-label="Send message"
             className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-accent text-accent-foreground hover:opacity-90 transition-opacity disabled:opacity-40">
             {streaming ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
           </button>

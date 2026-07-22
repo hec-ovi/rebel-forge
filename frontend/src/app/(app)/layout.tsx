@@ -1,18 +1,27 @@
 "use client";
 
 import { useState } from "react";
+import { usePathname } from "next/navigation";
 import { motion, AnimatePresence } from "motion/react";
 import { AppSidebar } from "@/components/layout/app-sidebar";
 import { AppHeader } from "@/components/layout/app-header";
 import { ThemeProvider } from "@/components/layout/theme-provider";
 import { StoreProvider } from "@/components/store-provider";
+import { AuthGuard } from "@/components/auth-guard";
+import { OwnerGuard } from "@/components/owner-guard";
+import { navigation } from "@/config/navigation";
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const pathname = usePathname();
+  const ownerOnly = navigation.some((item) =>
+    item.ownerOnly && (pathname === item.href || pathname.startsWith(`${item.href}/`)),
+  );
 
   return (
-    <ThemeProvider>
-      <StoreProvider>
+    <AuthGuard>
+      <ThemeProvider>
+        <StoreProvider>
         <div className="flex h-screen overflow-hidden bg-background">
           {/* Subtle gradient background overlay */}
           <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(ellipse_at_top_right,oklch(0.72_0.2_40/4%)_0%,transparent_60%)]" />
@@ -50,10 +59,13 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           {/* Main content */}
           <div className="flex flex-1 flex-col overflow-hidden relative z-10">
             <AppHeader onToggleSidebar={() => setSidebarOpen(!sidebarOpen)} />
-            <main className="flex-1 min-h-0 overflow-hidden">{children}</main>
+            <main className="flex-1 min-h-0 overflow-hidden">
+              <OwnerGuard required={ownerOnly}>{children}</OwnerGuard>
+            </main>
           </div>
         </div>
-      </StoreProvider>
-    </ThemeProvider>
+        </StoreProvider>
+      </ThemeProvider>
+    </AuthGuard>
   );
 }

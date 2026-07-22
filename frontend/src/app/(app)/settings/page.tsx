@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   Clock, Cpu, Palette, AlertTriangle, CheckCircle2, Loader2,
   Trash2, Save, Eye, EyeOff, Zap, ChevronDown, ChevronUp, Key, Bot, Cloud,
@@ -18,9 +18,10 @@ import { getPlatform } from "@/lib/platforms";
 /* ============================================
    Shared
    ============================================ */
-function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
   return (
     <button onClick={() => onChange(!checked)}
+      role="switch" aria-checked={checked} aria-label={label}
       className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full transition-colors ${checked ? "bg-accent" : "bg-muted"}`}>
       <motion.span animate={{ x: checked ? 16 : 2 }} transition={{ type: "spring", stiffness: 500, damping: 30 }} className="mt-0.5 h-4 w-4 rounded-full bg-white shadow-sm" />
     </button>
@@ -36,17 +37,26 @@ interface ConnectionInfo {
   connected: boolean;
   credentials: Record<string, string>;
   fields: string[];
+  recreate_required?: boolean;
 }
 
 function ConnectionRow({ conn, onUpdate }: { conn: ConnectionInfo; onUpdate: () => void }) {
   const [expanded, setExpanded] = useState(false);
   const [data, setData] = useState<Record<string, string>>(conn.credentials || {});
+  const [dirtyFields, setDirtyFields] = useState<Record<string, true>>({});
   const [visible, setVisible] = useState<Record<string, boolean>>({});
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const [recreateRequired, setRecreateRequired] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ status: string; error?: string; profile?: Record<string, string> } | null>(null);
 
   const isSecret = (k: string) => k.includes("secret") || k.includes("token") || k.includes("key");
+  const updateField = (field: string, value: string) => {
+    setData((previous) => ({ ...previous, [field]: value }));
+    setDirtyFields((previous) => ({ ...previous, [field]: true }));
+    setSaveError("");
+  };
 
   // Try to get a real icon for social platforms
   const platformInfo = getPlatform(conn.platform);
@@ -54,9 +64,31 @@ function ConnectionRow({ conn, onUpdate }: { conn: ConnectionInfo; onUpdate: () 
   const PIcon = platformInfo.icon;
 
   const handleSave = async () => {
+    const credentials = Object.fromEntries(
+      Object.keys(dirtyFields)
+        .filter((field) => !data[field]?.startsWith("****"))
+        .map((field) => [field, data[field] ?? ""]),
+    );
+    if (Object.keys(credentials).length === 0) {
+      setSaveError("Enter a new value before saving.");
+      return;
+    }
     setSaving(true);
-    try { await apiFetch(`/v1/connections/${conn.platform}`, { method: "PUT", body: JSON.stringify({ credentials: data }) }); onUpdate(); }
-    catch {} finally { setSaving(false); }
+    setSaveError("");
+    try {
+      const updated = await apiFetch<ConnectionInfo>(`/v1/connections/${conn.platform}`, {
+        method: "PUT",
+        body: JSON.stringify({ credentials }),
+      });
+      setData(updated.credentials || {});
+      setDirtyFields({});
+      setRecreateRequired(updated.recreate_required === true);
+      onUpdate();
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Could not save credentials.");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleTest = async () => {
@@ -67,13 +99,23 @@ function ConnectionRow({ conn, onUpdate }: { conn: ConnectionInfo; onUpdate: () 
   };
 
   const handleDisconnect = async () => {
-    try { await apiFetch(`/v1/connections/${conn.platform}`, { method: "DELETE" }); setData({}); setTestResult(null); onUpdate(); } catch {}
+    setSaveError("");
+    try {
+      await apiFetch(`/v1/connections/${conn.platform}`, { method: "DELETE" });
+      setData({});
+      setDirtyFields({});
+      setRecreateRequired(false);
+      setTestResult(null);
+      onUpdate();
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Could not disconnect.");
+    }
   };
 
   // Custom labels for known platforms
   const labelMap: Record<string, string> = {
     vllm: "vLLM (Local)",
-    openai: "OpenRouter",
+    openai: "OpenAI",
     openrouter: "OpenRouter",
     cloudflare_r2: "Cloudflare R2",
     comfyui: "ComfyUI (Image Generation)",
@@ -81,26 +123,8 @@ function ConnectionRow({ conn, onUpdate }: { conn: ConnectionInfo; onUpdate: () 
     firecrawl: "Firecrawl",
   };
   const label = labelMap[conn.platform] || conn.platform.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-
-  // OpenRouter model options
-  const isOpenRouter = conn.platform === "openai" || conn.platform === "openrouter";
-  const openRouterModels = [
-    { id: "google/gemini-2.5-flash", label: "Gemini 2.5 Flash" },
-    { id: "x-ai/grok-3", label: "Grok 3" },
-    { id: "anthropic/claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
-    { id: "openai/gpt-4.1", label: "GPT-4.1" },
-    { id: "openai/gpt-4o", label: "GPT-4o" },
-  ];
-
-  // fal.ai model options
-  const isFalAi = conn.platform === "fal_ai";
-  const falModels = [
-    { id: "fal-ai/nano-banana-2", label: "Nano Banana 2 (Google, fast)" },
-    { id: "fal-ai/flux/schnell", label: "FLUX Schnell (4 steps, fast)" },
-    { id: "fal-ai/flux/dev", label: "FLUX Dev (28 steps, quality)" },
-    { id: "fal-ai/flux-pro/v1.1", label: "FLUX Pro v1.1 (best)" },
-    { id: "fal-ai/flux-2-pro", label: "FLUX 2 Pro (latest)" },
-  ];
+  const meteredTest = conn.platform === "fal_ai" || conn.platform === "firecrawl";
+  const testLabel = conn.platform === "fal_ai" ? "Run image test" : conn.platform === "firecrawl" ? "Run search test" : "Test";
 
   return (
     <div className={`rounded-md border overflow-hidden ${conn.connected ? "border-success/20" : "border-border/30"}`}>
@@ -114,53 +138,46 @@ function ConnectionRow({ conn, onUpdate }: { conn: ConnectionInfo; onUpdate: () 
         {expanded && (
           <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="border-t border-border/20">
             <div className="p-3 space-y-2">
-              {conn.fields.map((field) => (
+              {conn.fields.map((field) => {
+                const fieldId = `connection-${conn.platform}-${field}`;
+                return (
                 <div key={field}>
-                  <label className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider mb-0.5 block">{field.replace(/_/g, " ")}</label>
+                  <label htmlFor={fieldId} className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider mb-0.5 block">{field.replace(/_/g, " ")}</label>
                   <div className="relative">
-                    <input type={isSecret(field) && !visible[field] ? "password" : "text"} value={data[field] || ""} onChange={(e) => setData((p) => ({ ...p, [field]: e.target.value }))}
+                    <input id={fieldId} type={isSecret(field) && !visible[field] ? "password" : "text"} value={data[field] || ""} onChange={(e) => updateField(field, e.target.value)}
                       placeholder={field.replace(/_/g, " ")} className="w-full rounded-md border border-border bg-surface-raised/30 px-2.5 py-1.5 pr-8 text-[11px] font-mono placeholder:font-sans placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-accent/30" />
                     {isSecret(field) && (
-                      <button onClick={() => setVisible((p) => ({ ...p, [field]: !p[field] }))} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground/40 hover:text-foreground">
+                      <button type="button" aria-label={`${visible[field] ? "Hide" : "Show"} ${field.replace(/_/g, " ")}`} onClick={() => setVisible((p) => ({ ...p, [field]: !p[field] }))} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground/40 hover:text-foreground">
                         {visible[field] ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
                       </button>
                     )}
                   </div>
                 </div>
-              ))}
-              {/* Model selector for OpenRouter */}
-              {isOpenRouter && (
-                <div>
-                  <label className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider mb-0.5 block">Model</label>
-                  <select value={data.model || ""} onChange={(e) => setData((p) => ({ ...p, model: e.target.value }))}
-                    className="w-full rounded-md border border-border bg-surface-raised/30 px-2.5 py-1.5 text-[11px] focus:outline-none focus:ring-1 focus:ring-accent/30 appearance-none">
-                    <option value="">Select a model...</option>
-                    {openRouterModels.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
-                  </select>
-                </div>
-              )}
-              {/* Model selector for fal.ai */}
-              {isFalAi && (
-                <div>
-                  <label className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider mb-0.5 block">Model</label>
-                  <select value={data.model || ""} onChange={(e) => setData((p) => ({ ...p, model: e.target.value }))}
-                    className="w-full rounded-md border border-border bg-surface-raised/30 px-2.5 py-1.5 text-[11px] focus:outline-none focus:ring-1 focus:ring-accent/30 appearance-none">
-                    <option value="">Select a model...</option>
-                    {falModels.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
-                  </select>
-                </div>
-              )}
+              )})}
               {testResult && (
                 <div className={`rounded-md px-2.5 py-1.5 text-[11px] ${testResult.status === "ok" ? "bg-success/10 text-success" : "bg-danger/10 text-danger"}`}>
                   {testResult.status === "ok" ? <><CheckCircle2 className="inline h-3 w-3 mr-1" />OK{testResult.profile?.username && ` — ${testResult.profile.username}`}</> : <><AlertTriangle className="inline h-3 w-3 mr-1" />{testResult.error}</>}
                 </div>
               )}
+              {saveError && <p role="alert" className="rounded-md bg-danger/10 px-2.5 py-1.5 text-[11px] text-danger">{saveError}</p>}
+              {recreateRequired && (
+                <p role="status" className="rounded-md bg-warning/10 px-2.5 py-1.5 text-[11px] text-warning">
+                  From the repository root, recreate the API and worker to load this connection change: <code className="font-mono">docker compose up -d --force-recreate api worker</code>
+                </p>
+              )}
+              {meteredTest && (
+                <p className="rounded-md bg-warning/10 px-2.5 py-1.5 text-[10px] text-warning">
+                  {conn.platform === "fal_ai"
+                    ? "This generates a real test image and may incur provider usage charges."
+                    : "This runs a real web search and may incur provider usage charges."}
+                </p>
+              )}
               <div className="flex items-center gap-2 pt-1">
-                <button onClick={handleSave} disabled={saving} className="flex items-center gap-1 rounded-md bg-accent px-3 py-1 text-[11px] font-semibold text-accent-foreground hover:opacity-90 disabled:opacity-50">
+                <button onClick={handleSave} disabled={saving || Object.keys(dirtyFields).length === 0} className="flex items-center gap-1 rounded-md bg-accent px-3 py-1 text-[11px] font-semibold text-accent-foreground hover:opacity-90 disabled:opacity-50">
                   {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}Save
                 </button>
                 <button onClick={handleTest} disabled={testing} className="flex items-center gap-1 rounded-md border border-border px-2.5 py-1 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-50">
-                  {testing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Zap className="h-3 w-3" />}Test
+                  {testing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Zap className="h-3 w-3" />}{testLabel}
                 </button>
                 {conn.connected && (
                   <><div className="flex-1" /><button onClick={handleDisconnect} className="flex items-center gap-1 text-[11px] text-danger hover:underline"><Trash2 className="h-3 w-3" />Disconnect</button></>
@@ -211,14 +228,16 @@ function ProviderSwitcher() {
   const [testResult, setTestResult] = useState<Record<string, { status: string; error?: string; models?: string[] }>>({});
   const [expanded, setExpanded] = useState<string | null>(null);
   const [editFields, setEditFields] = useState<Record<string, Record<string, string>>>({});
+  const [providerError, setProviderError] = useState("");
 
   const loadProviders = async () => {
     try {
+      setProviderError("");
       const data = await apiFetch<ProvidersState>("/v1/providers");
       setState(data);
       // Pre-fill fields from connections API for providers that have config
       const prefill: Record<string, Record<string, string>> = {};
-      for (const pid of ["vllm", "openrouter", "fal_ai"]) {
+      for (const pid of ["vllm", "openai", "grok", "openrouter"]) {
         try {
           const conn = await apiFetch<{ credentials: Record<string, string> }>(`/v1/connections/${pid}`);
           if (conn.credentials) {
@@ -227,10 +246,14 @@ function ProviderSwitcher() {
               if (v && !v.startsWith("****")) prefill[pid][k] = v;
             }
           }
-        } catch {}
+        } catch {
+          // Provider metadata remains usable when an optional credential prefill fails.
+        }
       }
       setEditFields((prev) => ({ ...prefill, ...prev }));
-    } catch {}
+    } catch (caught) {
+      setProviderError(caught instanceof Error ? caught.message : "Could not load AI providers.");
+    }
     finally { setLoading(false); }
   };
 
@@ -238,6 +261,7 @@ function ProviderSwitcher() {
 
   const handleActivate = async (providerId: string) => {
     setSwitching(providerId);
+    setProviderError("");
     try {
       const fields = editFields[providerId] || {};
       await apiFetch("/v1/providers/active", {
@@ -250,7 +274,9 @@ function ProviderSwitcher() {
         }),
       });
       await loadProviders();
-    } catch {}
+    } catch (caught) {
+      setProviderError(caught instanceof Error ? caught.message : "Could not activate this provider.");
+    }
     finally { setSwitching(""); }
   };
 
@@ -279,16 +305,17 @@ function ProviderSwitcher() {
   };
 
   if (loading) return <div className="flex justify-center py-4"><Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /></div>;
-  if (!state) return null;
+  if (!state) return providerError ? <p role="alert" className="rounded-md bg-danger/10 px-3 py-2 text-[11px] text-danger">{providerError}</p> : null;
 
   // Show only these providers in this order
-  const displayOrder = ["vllm", "codex", "openrouter"];
+  const displayOrder = ["vllm", "codex", "openai", "grok", "openrouter"];
   const providers = displayOrder
     .map((id) => state.providers.find((p) => p.id === id))
     .filter(Boolean) as ProviderInfo[];
 
   return (
     <div className="space-y-2">
+      {providerError && <p role="alert" className="rounded-md bg-danger/10 px-3 py-2 text-[11px] text-danger">{providerError}</p>}
       {providers.map((p) => {
         const Icon = providerIcons[p.id] || Bot;
         const isActive = p.active;
@@ -316,14 +343,17 @@ function ProviderSwitcher() {
                 <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="border-t border-border/20">
                   <div className="p-3 space-y-2">
                     {isCodex && (
-                      <p className="text-[11px] text-muted-foreground">Spawns the local Codex CLI agent. Uses your OPENAI_API_KEY from env. Frontier models with agentic tool calling.</p>
+                      <p className="text-[11px] text-muted-foreground">Spawns the installed Codex CLI and uses its existing local authentication and configuration.</p>
                     )}
 
                     {/* Fields */}
-                    {p.fields.filter((f) => f !== "model" || !isCodex).map((field) => (
+                    {p.fields.filter((f) => f !== "model" || !isCodex).map((field) => {
+                      const fieldId = `provider-${p.id}-${field}`;
+                      return (
                       <div key={field}>
-                        <label className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider mb-0.5 block">{field.replace(/_/g, " ")}</label>
+                        <label htmlFor={fieldId} className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider mb-0.5 block">{field.replace(/_/g, " ")}</label>
                         <input
+                          id={fieldId}
                           type={field.includes("key") || field.includes("secret") ? "password" : "text"}
                           value={fields[field] || ""}
                           onChange={(e) => setField(p.id, field, e.target.value)}
@@ -331,22 +361,7 @@ function ProviderSwitcher() {
                           className="w-full rounded-md border border-border bg-surface-raised/30 px-2.5 py-1.5 text-[11px] font-mono placeholder:font-sans placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-accent/30"
                         />
                       </div>
-                    ))}
-
-                    {/* Model selector for openrouter */}
-                    {p.id === "openrouter" && (
-                      <div>
-                        <label className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider mb-0.5 block">Model</label>
-                        <select value={fields.model || ""} onChange={(e) => setField(p.id, "model", e.target.value)}
-                          className="w-full rounded-md border border-border bg-surface-raised/30 px-2.5 py-1.5 text-[11px] focus:outline-none focus:ring-1 focus:ring-accent/30 appearance-none">
-                          <option value="">Default ({p.default_model})</option>
-                          <option value="google/gemini-2.5-flash">Gemini 2.5 Flash</option>
-                          <option value="x-ai/grok-3">Grok 3</option>
-                          <option value="anthropic/claude-sonnet-4-6">Claude Sonnet 4.6</option>
-                          <option value="openai/gpt-4.1">GPT-4.1</option>
-                        </select>
-                      </div>
-                    )}
+                    )})}
 
                     {/* Test result */}
                     {tr && (
@@ -397,30 +412,53 @@ export default function SettingsPage() {
   const [heartbeatEnabled, setHeartbeatEnabled] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [resetError, setResetError] = useState("");
   const [showFeatures, setShowFeatures] = useState(false);
+  const [heartbeatError, setHeartbeatError] = useState("");
+  const savedHeartbeat = useRef({ enabled: false, hours: 6, autoApprove: false });
 
   const [connections, setConnections] = useState<ConnectionInfo[]>([]);
   const [loadingConns, setLoadingConns] = useState(true);
+  const [connectionsError, setConnectionsError] = useState("");
 
   const loadConnections = async () => {
-    try { const data = await apiFetch<ConnectionInfo[]>("/v1/connections"); setConnections(data); } catch {}
+    try {
+      const data = await apiFetch<ConnectionInfo[]>("/v1/connections");
+      setConnections(data);
+      setConnectionsError("");
+    } catch (caught) {
+      setConnectionsError(caught instanceof Error ? caught.message : "Could not load connections.");
+    }
     finally { setLoadingConns(false); }
   };
 
   useEffect(() => {
     refreshReadiness();
     loadConnections();
-    apiFetch<{ last_run: string | null; interval_hours: number }>("/v1/heartbeat/status").then((d) => setHeartbeatHours(d.interval_hours)).catch(() => {});
+    apiFetch<{ last_run: string | null; interval_hours: number }>("/v1/heartbeat/status").then((d) => {
+      setHeartbeatHours(d.interval_hours);
+      savedHeartbeat.current.hours = d.interval_hours;
+    }).catch(() => {});
     apiFetch<{ brand_profile?: { style_notes?: { heartbeat?: { enabled: boolean; interval_hours: number; auto_approve: boolean } } } }>("/v1/workspace")
-      .then((d) => { const hb = d.brand_profile?.style_notes?.heartbeat; if (hb) { setHeartbeatEnabled(hb.enabled); setHeartbeatHours(hb.interval_hours); setAutoApprove(hb.auto_approve); } }).catch(() => {});
+      .then((d) => { const hb = d.brand_profile?.style_notes?.heartbeat; if (hb) { setHeartbeatEnabled(hb.enabled); setHeartbeatHours(hb.interval_hours); setAutoApprove(hb.auto_approve); savedHeartbeat.current = { enabled: hb.enabled, hours: hb.interval_hours, autoApprove: hb.auto_approve }; } }).catch(() => {});
   }, [refreshReadiness]);
 
   const saveHB = async (enabled: boolean, hours: number, aa: boolean) => {
-    try { await apiFetch("/v1/heartbeat/config", { method: "PUT", body: JSON.stringify({ enabled, interval_hours: hours, auto_approve: aa }) }); } catch {}
+    setHeartbeatError("");
+    try {
+      await apiFetch("/v1/heartbeat/config", { method: "PUT", body: JSON.stringify({ enabled, interval_hours: hours, auto_approve: aa }) });
+      savedHeartbeat.current = { enabled, hours, autoApprove: aa };
+    } catch (caught) {
+      const previous = savedHeartbeat.current;
+      setHeartbeatEnabled(previous.enabled);
+      setHeartbeatHours(previous.hours);
+      setAutoApprove(previous.autoApprove);
+      setHeartbeatError(caught instanceof Error ? caught.message : "Could not save heartbeat settings.");
+    }
   };
 
   // Group connections
-  const socialIds = new Set(["x", "instagram", "linkedin", "facebook", "threads", "tiktok", "youtube", "pinterest"]);
+  const socialIds = new Set(["x", "instagram", "linkedin", "facebook", "threads"]);
   const hideFromServices = new Set(["vllm", "openai", "anthropic", "gemini", "grok", "openrouter", "codex"]);
   const platformConns = connections.filter((c) => socialIds.has(c.platform));
   const serviceConns = connections.filter((c) => !socialIds.has(c.platform) && !hideFromServices.has(c.platform));
@@ -434,6 +472,7 @@ export default function SettingsPage() {
           <h1>Settings</h1>
           <p className="text-sm text-muted-foreground">System status, connections, and preferences.</p>
         </div>
+        {connectionsError && <p role="alert" className="rounded-md bg-danger/10 px-3 py-2 text-[11px] text-danger">{connectionsError}</p>}
 
         {/* Setup wizard */}
         {readiness && !readiness.setup_complete && (
@@ -495,11 +534,11 @@ export default function SettingsPage() {
             <motion.div variants={staggerItem} className="rounded-md border border-border/40 bg-card p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <h3 className="flex items-center gap-2"><Clock className="h-4 w-4" />Heartbeat</h3>
-                <Toggle checked={heartbeatEnabled} onChange={(v) => { setHeartbeatEnabled(v); saveHB(v, heartbeatHours, autoApprove); }} />
+                <Toggle checked={heartbeatEnabled} label="Enable heartbeat" onChange={(v) => { setHeartbeatEnabled(v); saveHB(v, heartbeatHours, autoApprove); }} />
               </div>
               <div className="flex items-center gap-3">
                 <span className="text-[12px] text-muted-foreground">Every</span>
-                <input type="number" min={1} max={72} value={heartbeatHours} onChange={(e) => setHeartbeatHours(Number(e.target.value))}
+                <input type="number" min={1} max={72} value={heartbeatHours} onChange={(e) => setHeartbeatHours(Number(e.target.value))} aria-label="Heartbeat interval in hours"
                   onBlur={() => saveHB(heartbeatEnabled, heartbeatHours, autoApprove)}
                   className="w-14 rounded-md border border-input bg-surface-raised/50 px-2 py-1 text-sm text-center focus:outline-none focus:ring-1 focus:ring-accent/30" />
                 <span className="text-[12px] text-muted-foreground">hours</span>
@@ -507,6 +546,14 @@ export default function SettingsPage() {
                   {heartbeatEnabled ? "Active" : "Off"}
                 </span>
               </div>
+              <div className="flex items-center justify-between gap-4 rounded-md border border-danger/25 bg-danger/5 p-3">
+                <div>
+                  <p className="text-[12px] font-semibold text-warning">Auto-approve drafts</p>
+                  <p className="text-[10px] text-muted-foreground">Approve new heartbeat drafts automatically. Publication still requires manual review.</p>
+                </div>
+                <Toggle checked={autoApprove} label="Auto-approve heartbeat drafts" onChange={(value) => { setAutoApprove(value); saveHB(heartbeatEnabled, heartbeatHours, value); }} />
+              </div>
+              {heartbeatError && <p role="alert" className="rounded-md bg-danger/10 px-3 py-2 text-[11px] text-danger">{heartbeatError}</p>}
             </motion.div>
 
             {/* Systems — grouped by local vs cloud */}
@@ -602,14 +649,16 @@ export default function SettingsPage() {
                   <div className="flex items-center gap-2">
                     <button onClick={async () => {
                       setResetting(true);
+                      setResetError("");
                       try { await apiFetch("/v1/account/reset", { method: "POST" }); localStorage.removeItem("rf_token"); localStorage.removeItem("rf_role"); localStorage.removeItem("rf_onboarded"); sessionStorage.clear(); window.location.href = "/login"; }
-                      catch (e) { console.error("Reset failed:", e); setResetting(false); }
+                      catch (caught) { setResetError(caught instanceof Error ? caught.message : "Could not reset the account."); setResetting(false); }
                     }} disabled={resetting} className="flex items-center gap-1.5 rounded-md bg-danger px-4 py-1.5 text-[12px] font-semibold text-white hover:opacity-90 disabled:opacity-50">
                       {resetting ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
                       {resetting ? "Resetting..." : "Yes, reset everything"}
                     </button>
                     <button onClick={() => setShowResetConfirm(false)} className="text-[12px] text-muted-foreground hover:text-foreground">Cancel</button>
                   </div>
+                  {resetError && <p role="alert" className="text-[11px] text-danger">{resetError}</p>}
                 </motion.div>
               )}
             </motion.div>

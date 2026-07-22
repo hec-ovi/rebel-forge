@@ -8,7 +8,7 @@ import {
 import { motion } from "motion/react";
 import { staggerContainer, staggerItem } from "@/lib/animations";
 import { PageContainer } from "@/components/common/page-container";
-import { platformList, getPlatform } from "@/lib/platforms";
+import { getPlatform } from "@/lib/platforms";
 import { apiFetch } from "@/lib/api";
 
 interface FetchedPost {
@@ -27,8 +27,9 @@ interface PlatformTab {
   posts: FetchedPost[];
   loading: boolean;
   error: string;
-  learned: boolean;
-  learning: boolean;
+  imported: boolean;
+  importing: boolean;
+  postsImported: number | null;
 }
 
 const connectedPlatforms = ["x", "facebook", "instagram", "threads"];
@@ -48,17 +49,18 @@ export default function StyleLearnPage() {
       posts: [],
       loading: false,
       error: "",
-      learned: false,
-      learning: false,
+      imported: false,
+      importing: false,
+      postsImported: null,
     }));
     setTabs(initial);
     setActiveTab(connectedPlatforms[0]);
 
-    // Check which platforms already have style learning
-    apiFetch<{ style_learned_platforms?: string[] }>("/v1/training/status")
+    // Check which platforms already have imported style context.
+    apiFetch<{ style_context_platforms?: string[] }>("/v1/training/status")
       .then((d) => {
-        const learned = d.style_learned_platforms || [];
-        setTabs((prev) => prev.map((t) => ({ ...t, learned: learned.includes(t.id) })));
+        const imported = d.style_context_platforms || [];
+        setTabs((prev) => prev.map((t) => ({ ...t, imported: imported.includes(t.id) })));
       })
       .catch(() => {});
 
@@ -75,19 +77,19 @@ export default function StyleLearnPage() {
     }
   };
 
-  const learnStyle = async (platformId: string) => {
+  const importStyleExamples = async (platformId: string) => {
     const tab = tabs.find((t) => t.id === platformId);
     if (!tab || tab.posts.length === 0) return;
 
-    setTabs((prev) => prev.map((t) => t.id === platformId ? { ...t, learning: true } : t));
+    setTabs((prev) => prev.map((t) => t.id === platformId ? { ...t, importing: true } : t));
     try {
-      await apiFetch("/v1/training/style-learn", {
+      const result = await apiFetch<{ imported?: boolean; posts_imported: number }>("/v1/training/style-learn", {
         method: "POST",
         body: JSON.stringify({ platform: platformId, posts: tab.posts }),
       });
-      setTabs((prev) => prev.map((t) => t.id === platformId ? { ...t, learning: false, learned: true } : t));
+      setTabs((prev) => prev.map((t) => t.id === platformId ? { ...t, importing: false, imported: result.imported !== false, postsImported: result.posts_imported } : t));
     } catch (e) {
-      setTabs((prev) => prev.map((t) => t.id === platformId ? { ...t, learning: false, error: e instanceof Error ? e.message : "Failed" } : t));
+      setTabs((prev) => prev.map((t) => t.id === platformId ? { ...t, importing: false, error: e instanceof Error ? e.message : "Failed" } : t));
     }
   };
 
@@ -99,8 +101,8 @@ export default function StyleLearnPage() {
     <PageContainer>
       <motion.div variants={staggerContainer} initial="initial" animate="animate" className="space-y-4">
         <div>
-          <h1 className="flex items-center gap-2"><BookOpen className="h-5 w-5" />Style Learning</h1>
-          <p className="text-sm text-muted-foreground mt-0.5">Learn your writing style from your existing posts on each platform.</p>
+          <h1 className="flex items-center gap-2"><BookOpen className="h-5 w-5" />Style Context</h1>
+          <p className="text-sm text-muted-foreground mt-0.5">Import representative posts as platform-specific examples for future prompt context.</p>
         </div>
 
         {/* Platform tabs */}
@@ -121,7 +123,7 @@ export default function StyleLearnPage() {
               >
                 <PIcon className="h-3.5 w-3.5" />
                 {tab.label}
-                {tab.learned && <CheckCircle2 className="h-3 w-3 text-success" />}
+                {tab.imported && <CheckCircle2 className="h-3 w-3 text-success" />}
               </button>
             );
           })}
@@ -143,18 +145,18 @@ export default function StyleLearnPage() {
 
               {active.posts.length > 0 && (
                 <button
-                  onClick={() => learnStyle(active.id)}
-                  disabled={active.learning}
+                  onClick={() => importStyleExamples(active.id)}
+                  disabled={active.importing}
                   className="flex items-center gap-1.5 rounded-lg bg-success px-4 py-2 text-[12px] font-semibold text-white hover:opacity-90 disabled:opacity-50"
                 >
-                  {active.learning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <BookOpen className="h-3.5 w-3.5" />}
-                  {active.learning ? "Learning..." : active.learned ? "Re-learn Style" : "Learn Style from Posts"}
+                  {active.importing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <BookOpen className="h-3.5 w-3.5" />}
+                  {active.importing ? "Importing..." : active.imported ? "Refresh Style Examples" : "Import Style Examples"}
                 </button>
               )}
 
-              {active.learned && (
+              {active.imported && (
                 <span className="flex items-center gap-1 text-[11px] text-success font-medium">
-                  <CheckCircle2 className="h-3 w-3" />Style learned
+                  <CheckCircle2 className="h-3 w-3" />{active.postsImported === null ? "Style examples imported" : `${active.postsImported} style ${active.postsImported === 1 ? "example" : "examples"} imported`}
                 </span>
               )}
 
@@ -164,7 +166,7 @@ export default function StyleLearnPage() {
             </div>
 
             {active.error && (
-              <div className="rounded-lg border border-danger/20 bg-danger/5 px-3 py-2 text-[12px] text-danger flex items-center gap-2">
+              <div role="alert" className="rounded-lg border border-danger/20 bg-danger/5 px-3 py-2 text-[12px] text-danger flex items-center gap-2">
                 <AlertCircle className="h-3.5 w-3.5" />{active.error}
               </div>
             )}
@@ -201,7 +203,6 @@ export default function StyleLearnPage() {
                   const eb = Object.values(mb).reduce((s, v) => s + v, 0);
                   return eb - ea;
                 }).map((post, i) => {
-                  const plat = getPlatform(post.platform);
                   const m = post.metrics || {};
                   const totalEngagement = Object.values(m).reduce((a, b) => a + b, 0);
 
@@ -262,8 +263,8 @@ export default function StyleLearnPage() {
             {active.posts.length === 0 && !active.loading && (
               <div className="flex flex-col items-center justify-center py-12 text-center">
                 <BookOpen className="h-8 w-8 text-muted-foreground/20 mb-3" />
-                <p className="text-[13px] text-muted-foreground/50">Click "Fetch My Posts" to load your {active.label} posts</p>
-                <p className="text-[11px] text-muted-foreground/30 mt-1">The agent will learn your writing style and tone from them</p>
+                <p className="text-[13px] text-muted-foreground/50">Click &quot;Fetch My Posts&quot; to load your {active.label} posts</p>
+                <p className="text-[11px] text-muted-foreground/30 mt-1">These examples will be used as future prompt context.</p>
               </div>
             )}
           </motion.div>

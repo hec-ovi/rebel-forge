@@ -5,8 +5,10 @@ import { useRouter } from "next/navigation";
 import { Flame, ArrowRight, Settings } from "lucide-react";
 import { motion } from "motion/react";
 import { Chat } from "@/components/chat";
-import { apiFetch, checkHealth } from "@/lib/api";
+import { apiFetch } from "@/lib/api";
 import { ThemeProvider } from "@/components/layout/theme-provider";
+import { AuthGuard } from "@/components/auth-guard";
+import { OwnerGuard } from "@/components/owner-guard";
 
 export default function OnboardingPage() {
   const router = useRouter();
@@ -15,14 +17,17 @@ export default function OnboardingPage() {
   const [llmOnline, setLlmOnline] = useState<boolean | null>(null);
 
   useEffect(() => {
-    // Check if ANY LLM is available (vLLM, Codex CLI, or OpenRouter)
     const checkLlm = async () => {
       try {
-        const r = await apiFetch<{ active_provider: string }>("/v1/providers");
-        setLlmOnline(!!r.active_provider);
+        const readiness = await apiFetch<{
+          systems: Record<string, { ready: boolean; group?: string }>;
+        }>("/v1/readiness");
+        const activeProvider = Object.values(readiness.systems).find(
+          (system) => system.group === "active",
+        );
+        setLlmOnline(activeProvider?.ready === true);
       } catch {
-        // Fallback: check vLLM directly
-        checkHealth("http://127.0.0.1:8000/health").then(setLlmOnline);
+        setLlmOnline(false);
       }
     };
     checkLlm();
@@ -69,8 +74,10 @@ export default function OnboardingPage() {
   }
 
   return (
-    <ThemeProvider>
-      <div className="flex flex-col h-screen overflow-hidden bg-background">
+    <AuthGuard>
+      <OwnerGuard>
+        <ThemeProvider>
+        <div className="flex flex-col h-screen overflow-hidden bg-background">
         {/* Header — sticky */}
         <header className="shrink-0 flex items-center justify-between border-b border-border/50 px-6 py-3 bg-surface">
           {/* Left: logo */}
@@ -143,10 +150,12 @@ export default function OnboardingPage() {
         <Chat
           mode="onboarding"
           onSummary={handleSummary}
-          initialMessage="Let's set up your content engine. Which platforms are you active on? (Instagram, TikTok, LinkedIn, YouTube, X, etc.)"
+          initialMessage="Let's set up your content engine. Which supported platforms are you active on? (Instagram, LinkedIn, Facebook, Threads, or X.)"
         />
         </div>
-      </div>
-    </ThemeProvider>
+        </div>
+        </ThemeProvider>
+      </OwnerGuard>
+    </AuthGuard>
   );
 }

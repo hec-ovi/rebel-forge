@@ -59,6 +59,7 @@ export function AgentStatus() {
   const heartbeat = useAppStore((s) => s.heartbeat);
   const draftCounts = useAppStore((s) => s.draftCounts);
   const events = useAppStore((s) => s.events);
+  const lastRefreshedAt = useAppStore((s) => s.lastRefreshedAt);
 
   const isActive = agentState !== "idle" && agentState !== "error";
   const isWarm = agentState === "scouting" || agentState === "analyzing";
@@ -68,7 +69,7 @@ export function AgentStatus() {
 
   // Count in-progress events
   const inProgressCount = events.filter((e) => {
-    const age = Date.now() - new Date(e.created_at).getTime();
+    const age = lastRefreshedAt - new Date(e.created_at).getTime();
     if (age > 120000) return false;
     return e.event_type.endsWith(".started") || e.event_type === "job.queued" || e.event_type === "heartbeat.requested";
   }).length;

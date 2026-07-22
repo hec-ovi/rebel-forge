@@ -7,7 +7,7 @@ export default function OnboardingPage() {
     <div className="h-full">
       <Chat
         mode="onboarding"
-        initialMessage="Let's set up your content engine. Which platforms are you active on? (Instagram, TikTok, LinkedIn, YouTube, X, etc.)"
+        initialMessage="Let's set up your content engine. Which supported platforms are you active on? (Instagram, LinkedIn, Facebook, Threads, or X.)"
       />
     </div>
   );

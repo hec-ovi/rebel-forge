@@ -6,6 +6,7 @@ import { LogOut, Flame } from "lucide-react";
 import { motion } from "motion/react";
 import { navigation, type NavItem } from "@/config/navigation";
 import { useAppStore } from "@/lib/store";
+import { useAuthRole } from "@/hooks/use-auth-role";
 
 function NavBadge({ count }: { count: number }) {
   if (count <= 0) return null;
@@ -23,13 +24,14 @@ function NavBadge({ count }: { count: number }) {
 function SidebarLink({ item, isActive }: { item: NavItem; isActive: boolean }) {
   const draftCounts = useAppStore((s) => s.draftCounts);
   const events = useAppStore((s) => s.events);
+  const lastRefreshedAt = useAppStore((s) => s.lastRefreshedAt);
 
   let badgeCount = 0;
   if (item.badge === "pending") badgeCount = draftCounts.pending;
   else if (item.badge === "approved") badgeCount = draftCounts.approved;
   else if (item.badge === "events") {
     badgeCount = events.filter((e) => {
-      const age = Date.now() - new Date(e.created_at).getTime();
+      const age = lastRefreshedAt - new Date(e.created_at).getTime();
       return age < 3600000;
     }).length;
   }
@@ -63,10 +65,12 @@ function SidebarLink({ item, isActive }: { item: NavItem; isActive: boolean }) {
 
 export function AppSidebar() {
   const pathname = usePathname();
+  const role = useAuthRole();
+  const visibleNavigation = navigation.filter((item) => !item.ownerOnly || role === "owner");
 
-  const mainItems = navigation.filter((n) => n.group === "main");
-  const managerItems = navigation.filter((n) => n.group === "manager");
-  const systemItems = navigation.filter((n) => n.group === "system");
+  const mainItems = visibleNavigation.filter((n) => n.group === "main");
+  const managerItems = visibleNavigation.filter((n) => n.group === "manager");
+  const systemItems = visibleNavigation.filter((n) => n.group === "system");
 
   const isActive = (href: string) =>
     pathname === href || pathname.startsWith(href + "/");
@@ -86,14 +90,17 @@ export function AppSidebar() {
 
       {/* Main nav */}
       <nav className="flex-1 space-y-1 px-3 py-3">
-        <p className="px-3 pb-2 text-[10px] font-semibold uppercase tracking-[0.15em] text-muted-foreground/60">
-          Agentic
-        </p>
-        {mainItems.map((item) => (
-          <SidebarLink key={item.id} item={item} isActive={isActive(item.href)} />
-        ))}
-
-        <div className="my-4 mx-3 h-px bg-gradient-to-r from-transparent via-border to-transparent" />
+        {mainItems.length > 0 && (
+          <>
+            <p className="px-3 pb-2 text-[10px] font-semibold uppercase tracking-[0.15em] text-muted-foreground/60">
+              Agentic
+            </p>
+            {mainItems.map((item) => (
+              <SidebarLink key={item.id} item={item} isActive={isActive(item.href)} />
+            ))}
+            <div className="my-4 mx-3 h-px bg-gradient-to-r from-transparent via-border to-transparent" />
+          </>
+        )}
 
         <p className="px-3 pb-2 text-[10px] font-semibold uppercase tracking-[0.15em] text-muted-foreground/60">
           Manager
@@ -122,6 +129,7 @@ export function AppSidebar() {
             window.location.href = "/login";
           }}
           className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-[13px] text-muted-foreground/60 transition-all hover:text-foreground hover:bg-surface-raised"
+          aria-label="Log out"
         >
           <LogOut className="h-4 w-4" />
           <span>Logout</span>

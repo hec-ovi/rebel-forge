@@ -85,19 +85,23 @@ function DayDetail({
         initial={{ scale: 0.92, opacity: 0, y: 24 }}
         animate={{ scale: 1, opacity: 1, y: 0 }}
         exit={{ scale: 0.95, opacity: 0 }}
-        transition={{ type: "spring", stiffness: 300, damping: 25 }}
-        className="relative w-full max-w-lg rounded-lg glass-card border border-border/50 overflow-hidden max-h-[80vh] flex flex-col"
+      transition={{ type: "spring", stiffness: 300, damping: 25 }}
+      className="relative w-full max-w-lg rounded-lg glass-card border border-border/50 overflow-hidden max-h-[80vh] flex flex-col"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="day-detail-title"
       >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-border/20">
           <div>
-            <h3>{monthLabel} {day}, {year}</h3>
+            <h3 id="day-detail-title">{monthLabel} {day}, {year}</h3>
             <p className="text-xs text-muted-foreground mt-0.5">
               {drafts.length} item{drafts.length !== 1 ? "s" : ""}
             </p>
           </div>
           <button
             onClick={onClose}
+            aria-label="Close day details"
             className="flex h-8 w-8 items-center justify-center rounded-xl text-muted-foreground hover:text-foreground hover:bg-surface-raised"
           >
             <X className="h-4 w-4" />
@@ -261,6 +265,8 @@ export default function CalendarPage() {
       <button
         key={day}
         onClick={() => hasContent ? setSelectedDay(day) : undefined}
+        disabled={!hasContent}
+        aria-label={`${monthLabel} ${day}, ${year}${hasContent ? `, ${dayDrafts.length} content item${dayDrafts.length === 1 ? "" : "s"}` : ", no content"}`}
         className={`h-20 border-r border-b border-border/10 p-1.5 text-left transition-all ${
           isToday ? "bg-accent/5" : ""
         } ${hasContent ? "hover:bg-surface-raised/40 cursor-pointer" : ""}`}
@@ -321,6 +327,7 @@ export default function CalendarPage() {
           <div className="flex items-center gap-2">
             <button
               onClick={() => navigate(-1)}
+              aria-label="Previous month"
               className="flex h-8 w-8 items-center justify-center rounded-xl border border-border/30 text-muted-foreground hover:text-foreground transition-colors"
             >
               <ChevronLeft className="h-4 w-4" />
@@ -330,6 +337,7 @@ export default function CalendarPage() {
             </span>
             <button
               onClick={() => navigate(1)}
+              aria-label="Next month"
               className="flex h-8 w-8 items-center justify-center rounded-xl border border-border/30 text-muted-foreground hover:text-foreground transition-colors"
             >
               <ChevronRight className="h-4 w-4" />

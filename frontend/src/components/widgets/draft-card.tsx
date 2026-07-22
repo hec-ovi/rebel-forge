@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Image from "next/image";
 import {
   ExternalLink,
   ArrowRight,
@@ -11,6 +12,7 @@ import {
 import { motion, AnimatePresence } from "motion/react";
 import { getPlatform } from "@/lib/platforms";
 import { apiFetch } from "@/lib/api";
+import { useAuthRole } from "@/hooks/use-auth-role";
 import type { Draft } from "@/lib/types";
 
 const statusStyles: Record<string, { dot: string; label: string; text: string }> = {
@@ -30,6 +32,8 @@ interface DraftCardProps {
 export function DraftCard({ draft, onDelete }: DraftCardProps) {
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
+  const role = useAuthRole();
 
   const platform = getPlatform(draft.platform);
   const PlatformIcon = platform.icon;
@@ -37,21 +41,27 @@ export function DraftCard({ draft, onDelete }: DraftCardProps) {
 
   const handleDelete = async () => {
     setDeleting(true);
+    setDeleteError("");
     try {
       await apiFetch(`/v1/drafts/${draft.id}`, { method: "DELETE" });
       onDelete?.(draft.id);
-    } catch {}
-    finally { setDeleting(false); setConfirmDelete(false); }
+      setConfirmDelete(false);
+    } catch (caught) {
+      setDeleteError(caught instanceof Error ? caught.message : "Could not delete this draft.");
+    } finally {
+      setDeleting(false);
+    }
   };
 
   return (
     <div className="group relative overflow-hidden rounded-xl border border-border/30 bg-card hover:border-border/50 transition-colors">
       {/* Delete button — top right, visible on hover, hidden for published */}
-      {draft.status !== "published" && !confirmDelete && (
+      {role === "owner" && draft.status !== "published" && !confirmDelete && (
         <button
           onClick={(e) => { e.preventDefault(); e.stopPropagation(); setConfirmDelete(true); }}
           className="absolute top-2 right-2 z-10 flex h-6 w-6 items-center justify-center rounded-md bg-danger/10 text-danger/60 opacity-0 group-hover:opacity-100 hover:bg-danger/20 hover:text-danger transition-all"
           title="Delete draft"
+          aria-label="Delete draft"
         >
           <Trash2 className="h-3 w-3" />
         </button>
@@ -68,6 +78,7 @@ export function DraftCard({ draft, onDelete }: DraftCardProps) {
           >
             <AlertTriangle className="h-5 w-5 text-danger" />
             <p className="text-[12px] font-medium text-foreground">Delete this draft?</p>
+            {deleteError && <p role="alert" className="px-4 text-center text-[11px] text-danger">{deleteError}</p>}
             <div className="flex items-center gap-2">
               <button
                 onClick={handleDelete}
@@ -116,7 +127,7 @@ export function DraftCard({ draft, onDelete }: DraftCardProps) {
       {/* Image thumbnail */}
       {draft.image_url && (
         <div className="px-4 pb-2">
-          <img src={draft.image_url} alt={draft.alt_text || draft.concept} className="w-full h-28 object-cover rounded-lg" />
+          <Image src={draft.image_url} alt={draft.alt_text || draft.concept} width={640} height={224} unoptimized className="w-full h-28 object-cover rounded-lg" />
         </div>
       )}
 

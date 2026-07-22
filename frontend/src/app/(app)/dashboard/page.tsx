@@ -17,6 +17,7 @@ import { motion } from "motion/react";
 import { staggerContainer, staggerItem } from "@/lib/animations";
 import { PageContainer } from "@/components/common/page-container";
 import { useDrafts, useWorkspace } from "@/hooks/use-api";
+import { useAuthRole } from "@/hooks/use-auth-role";
 
 function timeAgo(dateStr?: string) {
   if (!dateStr) return "";
@@ -31,6 +32,7 @@ function timeAgo(dateStr?: string) {
 export default function DashboardPage() {
   const { drafts, loading: draftsLoading, error: draftsError } = useDrafts();
   const { workspace, loading: wsLoading } = useWorkspace();
+  const isViewer = useAuthRole() !== "owner";
 
   const pending = drafts.filter((d) => d.status === "draft");
   const approved = drafts.filter((d) => d.status === "approved");
@@ -235,7 +237,7 @@ export default function DashboardPage() {
               </h2>
               <div className="space-y-2">
                 {approved.map((draft) => (
-                  <ApprovedDraftRow key={draft.id} draft={draft} />
+                  <ApprovedDraftRow key={draft.id} draft={draft} readOnly={isViewer} />
                 ))}
               </div>
             </motion.div>
@@ -246,7 +248,7 @@ export default function DashboardPage() {
   );
 }
 
-function ApprovedDraftRow({ draft }: { draft: { id: string; platform: string; concept: string; caption: string } }) {
+function ApprovedDraftRow({ draft, readOnly }: { draft: { id: string; platform: string; concept: string; caption: string }; readOnly: boolean }) {
   const [publishing, setPublishing] = useState(false);
   const [published, setPublished] = useState(false);
   const [error, setError] = useState("");
@@ -255,8 +257,9 @@ function ApprovedDraftRow({ draft }: { draft: { id: string; platform: string; co
     setPublishing(true);
     setError("");
     try {
-      await apiFetch(`/v1/drafts/${draft.id}/publish?platform=${draft.platform}`, { method: "POST" });
-      setPublished(true);
+      const result = await apiFetch<{ success: boolean; error?: string }>(`/v1/drafts/${draft.id}/publish?platform=${draft.platform}`, { method: "POST" });
+      if (result.success) setPublished(true);
+      else setError(result.error || "Publish failed");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed");
     } finally {
@@ -270,7 +273,9 @@ function ApprovedDraftRow({ draft }: { draft: { id: string; platform: string; co
         <span className="rounded bg-success/10 px-1.5 py-0.5 text-[11px] font-medium text-success capitalize">
           {draft.platform}
         </span>
-        {published ? (
+        {readOnly ? (
+          <span className="text-[11px] font-medium text-muted-foreground">Read only</span>
+        ) : published ? (
           <span className="flex items-center gap-1 text-[11px] text-success font-medium">
             <CheckCircle2 className="h-3 w-3" />Published
           </span>
@@ -287,7 +292,7 @@ function ApprovedDraftRow({ draft }: { draft: { id: string; platform: string; co
       </div>
       <p className="text-sm font-medium">{draft.concept}</p>
       <p className="text-xs text-muted-foreground line-clamp-2">{draft.caption}</p>
-      {error && <p className="text-[11px] text-danger">{error}</p>}
+      {error && <p role="alert" className="text-[11px] text-danger">{error}</p>}
     </div>
   );
 }

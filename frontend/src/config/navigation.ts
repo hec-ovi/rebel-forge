@@ -19,16 +19,17 @@ export interface NavItem {
   icon: LucideIcon;
   href: string;
   badge?: "pending" | "approved" | "events";
+  ownerOnly?: boolean;
   group: "main" | "manager" | "system";
 }
 
 export const navigation: NavItem[] = [
   // Agentic
-  { id: "rebel", label: "Rebel", icon: Flame, href: "/rebel", group: "main" },
-  { id: "onboarding", label: "Onboarding", icon: Sparkles, href: "/setup", group: "main" },
-  { id: "training", label: "Training", icon: GraduationCap, href: "/training", group: "main" },
-  { id: "style-learn", label: "Style Learn", icon: BookOpen, href: "/style-learn", group: "main" },
-  { id: "platforms", label: "Platforms", icon: Globe, href: "/platforms", group: "main" },
+  { id: "rebel", label: "Rebel", icon: Flame, href: "/rebel", ownerOnly: true, group: "main" },
+  { id: "onboarding", label: "Onboarding", icon: Sparkles, href: "/setup", ownerOnly: true, group: "main" },
+  { id: "training", label: "Training", icon: GraduationCap, href: "/training", ownerOnly: true, group: "main" },
+  { id: "style-learn", label: "Style Context", icon: BookOpen, href: "/style-learn", ownerOnly: true, group: "main" },
+  { id: "platforms", label: "Platforms", icon: Globe, href: "/platforms", ownerOnly: true, group: "main" },
 
   // Manager
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard, href: "/dashboard", group: "manager" },
@@ -37,6 +38,6 @@ export const navigation: NavItem[] = [
 
   // System
   { id: "analytics", label: "Analytics", icon: BarChart3, href: "/analytics", group: "system" },
-  { id: "tasks", label: "Activity", icon: Activity, href: "/tasks", badge: "events", group: "system" },
-  { id: "settings", label: "Settings", icon: Settings, href: "/settings", group: "system" },
+  { id: "tasks", label: "Activity", icon: Activity, href: "/tasks", badge: "events", ownerOnly: true, group: "system" },
+  { id: "settings", label: "Settings", icon: Settings, href: "/settings", ownerOnly: true, group: "system" },
 ];

@@ -61,6 +61,7 @@ interface AppStore {
   readiness: Readiness | null;
 
   initialized: boolean;
+  lastRefreshedAt: number;
 
   refresh: () => Promise<void>;
   refreshDrafts: () => Promise<void>;
@@ -107,36 +108,44 @@ export const useAppStore = create<AppStore>((set, get) => ({
   workspace: null,
   readiness: null,
   initialized: false,
+  lastRefreshedAt: 0,
 
   refresh: async () => {
-    try {
-      const [drafts, events, heartbeat, workspace] = await Promise.all([
-        apiFetch<Draft[]>("/v1/drafts"),
-        apiFetch<ActivityEvent[]>("/v1/activity?limit=50"),
-        apiFetch<HeartbeatStatus>("/v1/heartbeat/status"),
-        apiFetch<Workspace>("/v1/workspace"),
-      ]);
+    const [draftsResult, eventsResult, heartbeatResult, workspaceResult] = await Promise.allSettled([
+      apiFetch<Draft[]>("/v1/drafts"),
+      apiFetch<ActivityEvent[]>("/v1/activity?limit=50"),
+      apiFetch<HeartbeatStatus>("/v1/heartbeat/status"),
+      apiFetch<Workspace>("/v1/workspace"),
+    ]);
 
-      let hbEnabled = false;
+    if (draftsResult.status === "rejected" && workspaceResult.status === "rejected") return;
+
+    const current = get();
+    const drafts = draftsResult.status === "fulfilled" ? draftsResult.value : current.drafts;
+    const events = eventsResult.status === "fulfilled" ? eventsResult.value : current.events;
+    const heartbeat = heartbeatResult.status === "fulfilled" ? heartbeatResult.value : current.heartbeat;
+    const workspace = workspaceResult.status === "fulfilled" ? workspaceResult.value : current.workspace;
+    let hbEnabled = current.heartbeatEnabled;
+    if (workspaceResult.status === "fulfilled") {
+      hbEnabled = false;
       try {
-        const sn = (workspace.brand_profile?.style_notes || {}) as Record<string, unknown>;
+        const sn = (workspaceResult.value.brand_profile?.style_notes || {}) as Record<string, unknown>;
         const hb = (sn.heartbeat || {}) as Record<string, unknown>;
         hbEnabled = hb.enabled === true;
       } catch { /* ignore */ }
-
-      set({
-        drafts,
-        draftCounts: countDrafts(drafts),
-        events,
-        agentState: deriveAgentState(events),
-        heartbeat,
-        heartbeatEnabled: hbEnabled,
-        workspace,
-        initialized: true,
-      });
-    } catch {
-      // Not authenticated or backend down
     }
+
+    set({
+      drafts,
+      draftCounts: countDrafts(drafts),
+      events,
+      agentState: eventsResult.status === "fulfilled" ? deriveAgentState(events) : current.agentState,
+      heartbeat,
+      heartbeatEnabled: hbEnabled,
+      workspace,
+      initialized: true,
+      lastRefreshedAt: Date.now(),
+    });
   },
 
   refreshDrafts: async () => {

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import Image from "next/image";
 import { useParams, useRouter } from "next/navigation";
 import {
   Loader2, ArrowLeft, CheckCircle2, Zap, ExternalLink,
@@ -10,6 +11,7 @@ import { motion } from "motion/react";
 import { PageContainer } from "@/components/common/page-container";
 import { getPlatform } from "@/lib/platforms";
 import { apiFetch } from "@/lib/api";
+import { useAuthRole } from "@/hooks/use-auth-role";
 
 interface DraftDetail {
   id: string;
@@ -52,6 +54,8 @@ export default function DraftDetailPage() {
   const [editedCaption, setEditedCaption] = useState("");
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
+  const role = useAuthRole();
+  const isViewer = role !== "owner";
 
   useEffect(() => {
     apiFetch<DraftDetail>(`/v1/drafts/${draftId}`)
@@ -60,7 +64,7 @@ export default function DraftDetailPage() {
       .finally(() => setLoading(false));
   }, [draftId]);
 
-  const isEditable = draft && draft.status !== "published" && draft.status !== "failed";
+  const isEditable = draft && !isViewer && draft.status !== "published" && draft.status !== "failed";
   const isPublished = draft?.status === "published";
   const isX = draft?.platform === "x";
 
@@ -169,7 +173,7 @@ export default function DraftDetailPage() {
           {/* Image */}
           {draft.image_url && (
             <div className="border-b border-border/10">
-              <img src={draft.image_url} alt={draft.alt_text || draft.concept} className="w-full object-cover max-h-[350px]" />
+              <Image src={draft.image_url} alt={draft.alt_text || draft.concept} width={1200} height={700} unoptimized className="w-full object-cover max-h-[350px]" />
             </div>
           )}
 
@@ -186,6 +190,7 @@ export default function DraftDetailPage() {
               <textarea
                 value={editedCaption}
                 onChange={(e) => handleCaptionChange(e.target.value)}
+                aria-label="Post content"
                 className="w-full flex-1 min-h-[100px] rounded-lg border border-border/20 bg-background/50 px-3 py-2.5 text-[13px] leading-relaxed focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent/30 resize-none transition-colors"
                 placeholder="Write your post content..."
               />
@@ -273,6 +278,7 @@ export default function DraftDetailPage() {
 
           {/* Actions — inside the card, at the very bottom */}
           <div className="border-t border-border/10 px-5 py-3 flex items-center gap-2">
+            {isViewer && <span className="text-[11px] text-muted-foreground">Viewer access is read-only.</span>}
             {/* DIRTY — any editable status: only Save as Draft */}
             {dirty && isEditable && (
               <>
@@ -293,7 +299,7 @@ export default function DraftDetailPage() {
             )}
 
             {/* CLEAN DRAFT — Approve or Reject */}
-            {draft.status === "draft" && !dirty && (
+            {!isViewer && draft.status === "draft" && !dirty && (
               <>
                 <button onClick={handleApprove} disabled={!!acting || isOverLimit}
                   className="flex items-center gap-1.5 rounded-lg bg-success px-4 py-2 text-[11px] font-semibold text-white hover:opacity-90 disabled:opacity-50">
@@ -310,7 +316,7 @@ export default function DraftDetailPage() {
             )}
 
             {/* CLEAN APPROVED — Publish or Reject */}
-            {draft.status === "approved" && !dirty && (
+            {!isViewer && draft.status === "approved" && !dirty && (
               <>
                 <button onClick={handlePublish} disabled={!!acting || isOverLimit}
                   className="flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-[11px] font-semibold text-accent-foreground hover:opacity-90 disabled:opacity-50">
@@ -334,7 +340,7 @@ export default function DraftDetailPage() {
               </a>
             )}
 
-            {error && <span className="text-[10px] text-danger ml-auto">{error}</span>}
+            {error && <span role="alert" className="text-[10px] text-danger ml-auto">{error}</span>}
           </div>
         </div>
       </motion.div>

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Flame, ArrowRight, AlertCircle, Copy, Check } from "lucide-react";
+import { Flame, ArrowRight, AlertCircle } from "lucide-react";
 import { motion } from "motion/react";
 import { ThemeProvider } from "@/components/layout/theme-provider";
 import { API_BASE } from "@/lib/api";
@@ -12,32 +12,6 @@ export default function LoginPage() {
   const [token, setToken] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [fetchedToken, setFetchedToken] = useState<string | null>(null);
-  const [fetchingToken, setFetchingToken] = useState(false);
-  const [copied, setCopied] = useState(false);
-
-  const handleGetToken = async () => {
-    setFetchingToken(true);
-    try {
-      const res = await fetch(`${API_BASE}/v1/auth/tokens`);
-      if (!res.ok) throw new Error();
-      const data = await res.json();
-      const ownerToken = data.owner_token || data.token || (Array.isArray(data) ? data[0] : "");
-      setFetchedToken(ownerToken);
-    } catch {
-      setError("Cannot reach backend to fetch token");
-    } finally {
-      setFetchingToken(false);
-    }
-  };
-
-  const handleCopy = () => {
-    if (!fetchedToken) return;
-    navigator.clipboard.writeText(fetchedToken);
-    setToken(fetchedToken);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -48,7 +22,7 @@ export default function LoginPage() {
       const res = await fetch(`${API_BASE}/v1/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password: token }),
+        body: JSON.stringify({ password: token.trim() }),
       });
 
       if (!res.ok) {
@@ -57,12 +31,24 @@ export default function LoginPage() {
         return;
       }
 
-      const data = await res.json();
+      const data: unknown = await res.json();
+      if (
+        !data ||
+        typeof data !== "object" ||
+        !("token" in data) ||
+        typeof data.token !== "string" ||
+        !("role" in data) ||
+        (data.role !== "owner" && data.role !== "viewer")
+      ) {
+        setError("Backend returned an invalid login response");
+        return;
+      }
       localStorage.setItem("rf_token", data.token);
       localStorage.setItem("rf_role", data.role);
       router.push("/");
     } catch {
       setError("Cannot connect to backend");
+    } finally {
       setLoading(false);
     }
   };
@@ -104,16 +90,26 @@ export default function LoginPage() {
             {/* Form */}
             <form onSubmit={handleLogin} className="space-y-5">
               <div>
-                <label className="text-[11px] font-semibold text-muted-foreground/80 uppercase tracking-wider mb-2 block">
+                <label htmlFor="access-token" className="text-[11px] font-semibold text-muted-foreground/80 uppercase tracking-wider mb-2 block">
                   Access Token
                 </label>
                 <input
+                  id="access-token"
                   type="password"
                   placeholder="Paste your owner or viewer token"
                   value={token}
-                  onChange={(e) => setToken(e.target.value)}
+                  onChange={(e) => {
+                    setToken(e.target.value);
+                    setError("");
+                  }}
+                  autoComplete="current-password"
+                  aria-describedby="token-help"
+                  aria-invalid={!!error}
                   className="w-full rounded-xl border border-border bg-surface-raised/50 px-4 py-3 text-sm placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent/50 transition-all"
                 />
+                <p id="token-help" className="mt-2 text-[11px] leading-relaxed text-muted-foreground/60">
+                  Use an owner or viewer token provisioned by your local Rebel Forge administrator.
+                </p>
               </div>
 
               {error && (
@@ -121,6 +117,7 @@ export default function LoginPage() {
                   initial={{ opacity: 0, y: -4 }}
                   animate={{ opacity: 1, y: 0 }}
                   className="flex items-center gap-2 text-sm text-danger"
+                  role="alert"
                 >
                   <AlertCircle className="h-4 w-4" />
                   {error}
@@ -139,43 +136,6 @@ export default function LoginPage() {
               </motion.button>
             </form>
 
-            <div className="text-center space-y-2">
-              {!fetchedToken ? (
-                <p className="text-[12px] text-muted-foreground/60">
-                  Don&apos;t have an account?{" "}
-                  <button
-                    onClick={handleGetToken}
-                    disabled={fetchingToken}
-                    className="text-accent hover:underline font-medium"
-                  >
-                    {fetchingToken ? "Fetching..." : "Get your token here!"}
-                  </button>
-                </p>
-              ) : (
-                <motion.div
-                  initial={{ opacity: 0, y: 4 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="space-y-2"
-                >
-                  <p className="text-[11px] text-success">Your token:</p>
-                  <div className="flex items-center gap-2 rounded-md bg-surface-raised/50 border border-border/30 px-3 py-2">
-                    <code className="flex-1 text-[11px] font-mono text-foreground truncate">
-                      {fetchedToken}
-                    </code>
-                    <button
-                      onClick={handleCopy}
-                      className="shrink-0 flex items-center gap-1 text-[11px] text-accent hover:text-foreground transition-colors"
-                    >
-                      {copied ? (
-                        <><Check className="h-3.5 w-3.5 text-success" /> Copied</>
-                      ) : (
-                        <><Copy className="h-3.5 w-3.5" /> Copy</>
-                      )}
-                    </button>
-                  </div>
-                </motion.div>
-              )}
-            </div>
           </div>
         </motion.div>
       </div>

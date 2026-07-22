@@ -8,10 +8,13 @@ export default function Home() {
 
   useEffect(() => {
     const token = localStorage.getItem("rf_token");
+    const role = localStorage.getItem("rf_role");
     const onboarded = localStorage.getItem("rf_onboarded");
 
-    if (!token) {
+    if (!token || (role !== "owner" && role !== "viewer")) {
       router.replace("/login");
+    } else if (role === "viewer") {
+      router.replace("/dashboard");
     } else if (onboarded) {
       router.replace("/rebel");
     } else {

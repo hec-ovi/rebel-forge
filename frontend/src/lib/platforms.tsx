@@ -100,6 +100,6 @@ export function getPlatform(id: string): PlatformInfo {
   return platforms[id] || defaultPlatform;
 }
 
-export const platformList = Object.values(platforms).filter(
-  (p) => p.id !== "twitter"
-);
+export const supportedPlatformIds = ["x", "instagram", "linkedin", "facebook", "threads"] as const;
+
+export const platformList = supportedPlatformIds.map((id) => platforms[id]);

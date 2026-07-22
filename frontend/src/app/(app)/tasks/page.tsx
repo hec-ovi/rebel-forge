@@ -103,12 +103,13 @@ function PayloadSummary({ payload, eventType }: { payload: Record<string, unknow
   if (!payload || Object.keys(payload).length === 0) return null;
 
   if (eventType === "heartbeat.completed") {
-    const drafts = (payload.drafts_created as number) || 0;
+    const queued = typeof payload.drafts_queued === "number" ? payload.drafts_queued : null;
+    const created = typeof payload.drafts_created === "number" ? payload.drafts_created : 0;
     const scout = payload.scout as Record<string, unknown> | undefined;
     const trends = Array.isArray(scout?.trends) ? (scout.trends as string[]) : [];
     return (
       <div className="text-[11px] text-muted-foreground space-y-0.5">
-        <div>{drafts} drafts created</div>
+        <div>{queued === null ? `${created} drafts created` : `${queued} drafts queued`}</div>
         {trends.length > 0 && <div>Trends: {trends.slice(0, 3).join(", ")}</div>}
       </div>
     );
@@ -167,6 +168,8 @@ export default function TasksPage() {
   const [error, setError] = useState<string | null>(null);
   const [heartbeatStatus, setHeartbeatStatus] = useState<Record<string, unknown> | null>(null);
   const [activeTab, setActiveTab] = useState("all");
+  const [triggering, setTriggering] = useState(false);
+  const [actionError, setActionError] = useState("");
 
   const refresh = useCallback(async () => {
     try {
@@ -185,6 +188,19 @@ export default function TasksPage() {
     }
   }, []);
 
+  const triggerHeartbeat = async () => {
+    setTriggering(true);
+    setActionError("");
+    try {
+      await apiFetch("/v1/heartbeat/trigger", { method: "POST" });
+      await refresh();
+    } catch (caught) {
+      setActionError(caught instanceof Error ? caught.message : "Could not trigger the heartbeat.");
+    } finally {
+      setTriggering(false);
+    }
+  };
+
   useEffect(() => {
     refresh();
     const interval = setInterval(refresh, 10000);
@@ -202,7 +218,7 @@ export default function TasksPage() {
   if (error) {
     return (
       <div className="flex items-center justify-center h-64">
-        <div className="text-center space-y-2">
+        <div role="alert" className="text-center space-y-2">
           <AlertCircle className="h-6 w-6 text-danger mx-auto" />
           <p className="text-sm text-muted-foreground">{error}</p>
         </div>
@@ -225,14 +241,12 @@ export default function TasksPage() {
           </div>
           <div className="flex gap-2">
             <button
-              onClick={async () => {
-                await apiFetch("/v1/heartbeat/trigger", { method: "POST" });
-                refresh();
-              }}
+              onClick={triggerHeartbeat}
+              disabled={triggering}
               className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-accent-foreground hover:opacity-90 transition-opacity"
             >
-              <Zap className="h-3.5 w-3.5" />
-              Trigger Heartbeat
+              {triggering ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}
+              {triggering ? "Triggering..." : "Trigger Heartbeat"}
             </button>
             <button
               onClick={refresh}
@@ -243,6 +257,8 @@ export default function TasksPage() {
             </button>
           </div>
         </div>
+
+        {actionError && <p role="alert" className="rounded-lg border border-danger/20 bg-danger/5 px-3 py-2 text-xs text-danger">{actionError}</p>}
 
         {/* Heartbeat Status */}
         {heartbeatStatus && (

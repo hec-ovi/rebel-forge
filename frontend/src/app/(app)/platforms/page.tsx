@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import Image from "next/image";
 import { Save, Loader2, Upload, AlertCircle, ExternalLink, Sparkles, Copy, Check, Info } from "lucide-react";
 import { motion } from "motion/react";
 import { staggerContainer, staggerItem } from "@/lib/animations";
@@ -61,6 +62,7 @@ function PlatformCard({ profile }: { profile: PlatformProfile }) {
   const [aiSuggestion, setAiSuggestion] = useState<string | null>(null);
   const [generatingAi, setGeneratingAi] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const imageUrl = live.profile_image_url as string | undefined;
   const displayName = (live.display_name || live.name || p.label) as string;
@@ -82,8 +84,15 @@ function PlatformCard({ profile }: { profile: PlatformProfile }) {
 
   const handleSave = async () => {
     setSaving(true);
-    try { await apiFetch(`/v1/workspace/platform-profile/${profile.platform}`, { method: "PUT", body: JSON.stringify(editData) }); setSaved(true); }
-    catch {} finally { setSaving(false); }
+    setActionError(null);
+    try {
+      await apiFetch(`/v1/workspace/platform-profile/${profile.platform}`, { method: "PUT", body: JSON.stringify(editData) });
+      setSaved(true);
+    } catch (caught) {
+      setActionError(caught instanceof Error ? caught.message : "Could not save this profile.");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handlePush = async () => {
@@ -94,7 +103,7 @@ function PlatformCard({ profile }: { profile: PlatformProfile }) {
   };
 
   const handleAiSuggest = async () => {
-    setGeneratingAi(true); setAiSuggestion(null);
+    setGeneratingAi(true); setAiSuggestion(null); setActionError(null);
     try {
       const res = await apiFetch<{ sample: string }>("/v1/training/sample", {
         method: "POST", body: JSON.stringify({ platform: profile.platform, topic: "bio and profile description" }),
@@ -106,7 +115,9 @@ function PlatformCard({ profile }: { profile: PlatformProfile }) {
         setEditData((prev) => ({ ...prev, [field]: res.sample }));
         setSaved(false);
       }
-    } catch {} finally { setGeneratingAi(false); }
+    } catch (caught) {
+      setActionError(caught instanceof Error ? caught.message : "Could not generate a profile suggestion.");
+    } finally { setGeneratingAi(false); }
   };
 
   const handleCopySuggestion = () => {
@@ -126,7 +137,7 @@ function PlatformCard({ profile }: { profile: PlatformProfile }) {
       {/* Header */}
       <div className="flex items-center gap-3">
         {imageUrl ? (
-          <img src={imageUrl} alt="" className="h-11 w-11 rounded-full object-cover border border-border/30" />
+          <Image src={imageUrl} alt={`${displayName} profile picture`} width={44} height={44} unoptimized className="h-11 w-11 rounded-full object-cover border border-border/30" />
         ) : (
           <div className={`flex h-11 w-11 items-center justify-center rounded-full ${p.bg}`}>
             <PIcon className={`h-5 w-5 ${p.accent}`} />
@@ -183,18 +194,19 @@ function PlatformCard({ profile }: { profile: PlatformProfile }) {
         const originalVal = String(live[field] || profile.saved[field] || "");
         const currentVal = editData[field] ?? originalVal;
         const isDirty = currentVal !== originalVal;
+        const fieldId = `${profile.platform}-${field}`;
         return (
           <div key={field} className="border-t border-border/20 pt-3">
-            <label className="text-[10px] font-semibold text-accent/80 uppercase tracking-wider mb-1 block">{fLabel}</label>
+            <label htmlFor={fieldId} className="text-[10px] font-semibold text-accent/80 uppercase tracking-wider mb-1 block">{fLabel}</label>
             <div className="relative">
-              <textarea value={currentVal} onChange={(e) => { setEditData((prev) => ({ ...prev, [field]: e.target.value })); setSaved(false); setPushed(false); }}
+              <textarea id={fieldId} value={currentVal} onChange={(e) => { setEditData((prev) => ({ ...prev, [field]: e.target.value })); setSaved(false); setPushed(false); setActionError(null); }}
                 rows={3} className="w-full rounded-md border border-border bg-surface-raised/30 px-2.5 pt-2 pb-9 text-[12px] focus:outline-none focus:ring-1 focus:ring-accent/30 resize-none" />
               {/* Buttons inside the textarea area, bottom-right */}
               <div className="absolute bottom-2 right-2 flex items-center gap-1.5">
                 {saved && <span className="text-[9px] text-success mr-1">Saved</span>}
                 {pushed && <span className="text-[9px] text-success mr-1">Pushed</span>}
-                {pushError && <span className="text-[9px] text-danger mr-1">{pushError}</span>}
-                <button onClick={handleAiSuggest} disabled={generatingAi} title="Generate with AI"
+                {pushError && <span role="alert" className="text-[9px] text-danger mr-1">{pushError}</span>}
+                <button onClick={handleAiSuggest} disabled={generatingAi} title="Generate with AI" aria-label="Generate with AI"
                   className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium transition-all ${generatingAi ? "opacity-40" : "text-accent hover:bg-accent/10"}`}>
                   {generatingAi ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
                 </button>
@@ -209,6 +221,8 @@ function PlatformCard({ profile }: { profile: PlatformProfile }) {
           </div>
         );
       })}
+
+      {actionError && <p role="alert" className="rounded-md border border-danger/20 bg-danger/5 px-3 py-2 text-[11px] text-danger">{actionError}</p>}
 
       {/* AI suggestion for non-editable — copy and go edit manually */}
       {aiSuggestion && !hasEditable && (
@@ -265,7 +279,7 @@ export default function PlatformsPage() {
   }, []);
 
   if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div>;
-  if (error) return <div className="flex items-center justify-center h-64"><div className="text-center space-y-2"><AlertCircle className="h-6 w-6 text-danger mx-auto" /><p className="text-sm text-muted-foreground">{error}</p></div></div>;
+  if (error) return <div className="flex items-center justify-center h-64"><div role="alert" className="text-center space-y-2"><AlertCircle className="h-6 w-6 text-danger mx-auto" /><p className="text-sm text-muted-foreground">{error}</p></div></div>;
 
   const keys = Object.keys(profiles);
 

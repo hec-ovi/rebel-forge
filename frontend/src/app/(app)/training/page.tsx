@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import {
   Loader2, AlertCircle, Sparkles, Send, Star, CheckCircle2,
-  Brain, TrendingUp, RefreshCw, Plus, Trash2, Package, X,
+  Brain, RefreshCw, Plus, Trash2, Package, X,
   Save,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
@@ -36,10 +36,10 @@ interface Product {
 }
 
 const levelConfig: Record<string, { label: string; color: string; bg: string; progress: number }> = {
-  none: { label: "Untrained", color: "text-muted-foreground", bg: "bg-muted", progress: 0 },
-  basic: { label: "Learning", color: "text-warning", bg: "bg-warning", progress: 25 },
-  moderate: { label: "Getting better", color: "text-info", bg: "bg-info", progress: 60 },
-  strong: { label: "Well trained", color: "text-success", bg: "bg-success", progress: 90 },
+  none: { label: "No feedback", color: "text-muted-foreground", bg: "bg-muted", progress: 0 },
+  basic: { label: "Early feedback profile", color: "text-warning", bg: "bg-warning", progress: 25 },
+  moderate: { label: "Established feedback profile", color: "text-info", bg: "bg-info", progress: 60 },
+  strong: { label: "Strong feedback profile", color: "text-success", bg: "bg-success", progress: 90 },
 };
 
 // Only show connected platforms
@@ -49,9 +49,9 @@ const activePlatforms = platformList.filter((p) =>
 
 function RatingStars({ value, onChange }: { value: number; onChange: (v: number) => void }) {
   return (
-    <div className="flex items-center gap-1">
+    <div className="flex items-center gap-1" role="group" aria-label="Sample rating">
       {[1, 2, 3, 4, 5].map((s) => (
-        <button key={s} onClick={() => onChange(s)} className={`transition-colors ${s <= value ? "text-warning" : "text-muted-foreground/20 hover:text-muted-foreground/50"}`}>
+        <button key={s} onClick={() => onChange(s)} aria-label={`${s} star${s === 1 ? "" : "s"}`} aria-pressed={value === s} className={`transition-colors ${s <= value ? "text-warning" : "text-muted-foreground/20 hover:text-muted-foreground/50"}`}>
           <Star className={`h-5 w-5 ${s <= value ? "fill-current" : ""}`} />
         </button>
       ))}
@@ -101,6 +101,9 @@ function CorrectionModal({
       exit={{ opacity: 0 }}
       className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm p-4"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="correction-title"
     >
       <motion.div
         initial={{ scale: 0.95, opacity: 0 }}
@@ -112,10 +115,10 @@ function CorrectionModal({
         <div className="flex items-center justify-between px-5 py-3 border-b border-border/20">
           <div className="flex items-center gap-2">
             <PIcon className={`h-4 w-4 ${plat.accent}`} />
-            <h3 className="text-[14px] font-bold">Rate & Correct</h3>
+            <h3 id="correction-title" className="text-[14px] font-bold">Rate & Correct</h3>
             <span className={`text-[11px] ${plat.accent}`}>{plat.label}</span>
           </div>
-          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="h-4 w-4" /></button>
+          <button onClick={onClose} aria-label="Close correction dialog" className="text-muted-foreground hover:text-foreground"><X className="h-4 w-4" /></button>
         </div>
 
         <div className="px-5 py-4 space-y-4 max-h-[70vh] overflow-y-auto">
@@ -130,18 +133,18 @@ function CorrectionModal({
 
           {/* Feedback */}
           <div>
-            <span className="text-[10px] font-semibold text-muted-foreground/50 uppercase tracking-wider">Notes for the agent</span>
-            <input type="text" value={feedback} onChange={(e) => setFeedback(e.target.value)}
+            <label htmlFor="correction-feedback" className="text-[10px] font-semibold text-muted-foreground/50 uppercase tracking-wider">Notes for the agent</label>
+            <input id="correction-feedback" type="text" value={feedback} onChange={(e) => setFeedback(e.target.value)}
               placeholder="e.g. too buzzy, avoid emojis, be more direct..."
               className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-[12px] placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-accent/20" />
           </div>
 
           {/* Your version */}
           <div>
-            <span className="text-[10px] font-semibold text-muted-foreground/50 uppercase tracking-wider">Your version</span>
-            <textarea value={corrected} onChange={(e) => setCorrected(e.target.value)} rows={5}
+            <label htmlFor="corrected-sample" className="text-[10px] font-semibold text-muted-foreground/50 uppercase tracking-wider">Your version</label>
+            <textarea id="corrected-sample" value={corrected} onChange={(e) => setCorrected(e.target.value)} rows={5}
               className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-[12px] focus:outline-none focus:ring-2 focus:ring-accent/20 resize-none leading-relaxed" />
-            {corrected !== sample && <p className="text-[10px] text-accent mt-1">Changes detected — agent will learn from edits.</p>}
+            {corrected !== sample && <p className="text-[10px] text-accent mt-1">Changes detected. These edits will be used as context for future generations.</p>}
           </div>
         </div>
 
@@ -302,11 +305,14 @@ export default function TrainingPage() {
   };
 
   const handleDeleteProduct = async (id: string) => {
+    setError(null);
     try {
       await apiFetch(`/v1/products/${id}`, { method: "DELETE" });
       setProducts((p) => p.filter((x) => x.id !== id));
       if (selectedProduct === id) setSelectedProduct("");
-    } catch {}
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not delete this product.");
+    }
   };
 
   if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div>;
@@ -322,13 +328,13 @@ export default function TrainingPage() {
         <div className="flex items-center justify-between">
           <div>
             <h1>Training Center</h1>
-            <p className="text-sm text-muted-foreground">Teach the agent your voice — per platform.</p>
+            <p className="text-sm text-muted-foreground">Save corrections and style guidance as context for future generations, per platform.</p>
           </div>
-          <button onClick={loadData} className="text-muted-foreground hover:text-foreground"><RefreshCw className="h-4 w-4" /></button>
+          <button onClick={loadData} aria-label="Refresh training data" className="text-muted-foreground hover:text-foreground"><RefreshCw className="h-4 w-4" /></button>
         </div>
 
         {error && (
-          <div className="rounded-md border border-danger/20 bg-danger/5 px-3 py-2 text-[12px] text-danger flex items-center gap-2">
+          <div role="alert" className="rounded-md border border-danger/20 bg-danger/5 px-3 py-2 text-[12px] text-danger flex items-center gap-2">
             <AlertCircle className="h-3.5 w-3.5" />{error}
             <button onClick={() => setError(null)} className="ml-auto text-muted-foreground hover:text-foreground">dismiss</button>
           </div>
@@ -340,7 +346,7 @@ export default function TrainingPage() {
             <Brain className="h-5 w-5 text-accent shrink-0" />
             <div className="flex-1">
               <div className="flex items-center justify-between mb-1">
-                <span className="text-[12px] font-semibold">Training Level</span>
+                <span className="text-[12px] font-semibold">Feedback profile</span>
                 <span className={`text-[12px] font-semibold ${level.color}`}>{level.label}</span>
               </div>
               <div className="h-2 rounded-full bg-muted overflow-hidden">
@@ -356,7 +362,7 @@ export default function TrainingPage() {
 
         {/* Platform tabs + Generate */}
         <motion.div variants={staggerItem} className="rounded-md border border-border/40 bg-card p-4 space-y-4">
-          <h3 className="flex items-center gap-2"><Sparkles className="h-4 w-4 text-accent" />Generate & Train</h3>
+          <h3 className="flex items-center gap-2"><Sparkles className="h-4 w-4 text-accent" />Generate & Review</h3>
 
           {/* Platform selector */}
           <div className="flex items-center gap-1 flex-wrap">
@@ -364,7 +370,7 @@ export default function TrainingPage() {
               const Icon = p.icon;
               const styleExists = !!platformStyles[p.id]?.description;
               return (
-                <button key={p.id} onClick={() => setSelectedPlatform(p.id)}
+                <button key={p.id} onClick={() => setSelectedPlatform(p.id)} aria-pressed={selectedPlatform === p.id}
                   className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-medium transition-all ${selectedPlatform === p.id ? `${p.bg} ${p.accent} border border-current/20` : "text-muted-foreground/40 hover:text-muted-foreground hover:bg-surface-raised border border-transparent"}`}>
                   <Icon className="h-3.5 w-3.5" />
                   {p.label}
@@ -394,7 +400,7 @@ export default function TrainingPage() {
           <StyleGuideInput
             label={`${getPlatform(selectedPlatform).label} Style`}
             sublabel="Overrides general voice for this platform"
-            placeholder={`e.g. ${selectedPlatform === "x" ? "Max 2 sentences. No hashtags. Raw and confrontational." : selectedPlatform === "linkedin" ? "3-5 paragraphs. Storytelling. End with engagement question." : "Keep it visual-friendly. Short hook first line."}`}
+            placeholder={`e.g. ${selectedPlatform === "x" ? "Lead with the point. No hashtags. Raw and confrontational." : selectedPlatform === "linkedin" ? "Use a story-driven structure. End with an engagement question." : "Keep it visual-friendly. Put the hook first."}`}
             value={platformStyles[selectedPlatform]?.description || ""}
             editingKey={selectedPlatform}
             currentEditing={editingStyle}
@@ -410,7 +416,7 @@ export default function TrainingPage() {
 
           {/* Topic + Product */}
           <div className="flex items-center gap-2">
-            <input type="text" value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="Topic (optional)"
+            <input type="text" value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="Topic (optional)" aria-label="Training topic"
               className="flex-1 rounded-md border border-border bg-surface-raised/30 px-2.5 py-1.5 text-[12px] placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-accent/30" />
             <button onClick={handleGenerate} disabled={generating}
               className="flex items-center gap-1.5 rounded-md bg-accent px-4 py-1.5 text-[12px] font-semibold text-accent-foreground hover:opacity-90 disabled:opacity-50 shrink-0">
@@ -436,7 +442,7 @@ export default function TrainingPage() {
             <div className="flex items-center gap-2">
               <h3 className="flex items-center gap-2">
                 <CheckCircle2 className="h-4 w-4" />
-                Training History
+                Saved feedback
               </h3>
               <span className="text-[11px] text-muted-foreground tabular-nums">{filteredCorrections.length} corrections</span>
               <div className="flex-1" />
@@ -460,7 +466,7 @@ export default function TrainingPage() {
 
             {filteredCorrections.length === 0 ? (
               <div className="rounded-md border border-border/20 bg-surface-raised/10 p-6 text-center">
-                <p className="text-[12px] text-muted-foreground/50">No corrections yet. Generate a sample and train the agent.</p>
+                <p className="text-[12px] text-muted-foreground/50">No saved feedback yet. Generate a sample and record a correction.</p>
               </div>
             ) : (
               <div className="space-y-2">
@@ -522,7 +528,7 @@ export default function TrainingPage() {
                         {product.description && <p className="text-[10px] text-muted-foreground truncate">{product.description}</p>}
                       </div>
                       {selectedProduct === product.id && <span className="text-[9px] text-accent font-semibold">Selected</span>}
-                      <button onClick={(e) => { e.stopPropagation(); handleDeleteProduct(product.id); }} className="text-muted-foreground/30 hover:text-danger"><Trash2 className="h-3 w-3" /></button>
+                      <button onClick={(e) => { e.stopPropagation(); handleDeleteProduct(product.id); }} aria-label={`Delete ${product.name}`} className="text-muted-foreground/30 hover:text-danger"><Trash2 className="h-3 w-3" /></button>
                     </div>
                   ))}
                 </div>
@@ -559,23 +565,28 @@ function ProductForm({ onSave, onCancel }: { onSave: () => void; onCancel: () =>
   const [features, setFeatures] = useState("");
   const [tags, setTags] = useState("");
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
 
   const handleSave = async () => {
     if (!name.trim()) return;
     setSaving(true);
+    setError("");
     try {
       await apiFetch("/v1/products", { method: "POST", body: JSON.stringify({ name, description, target_audience: audience, key_features: features.split(",").map((f) => f.trim()).filter(Boolean), links: {}, tags: tags.split(",").map((t) => t.trim()).filter(Boolean) }) });
       onSave();
-    } catch {} finally { setSaving(false); }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not create this product.");
+    } finally { setSaving(false); }
   };
 
   return (
     <div className="rounded-md border border-accent/20 bg-accent/5 p-3 space-y-2">
-      <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Product name *" className="w-full rounded-md border border-border bg-surface-raised/30 px-2.5 py-1.5 text-[12px] placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-accent/30" />
-      <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Description" rows={2} className="w-full rounded-md border border-border bg-surface-raised/30 px-2.5 py-1.5 text-[12px] placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-accent/30 resize-none" />
-      <input value={audience} onChange={(e) => setAudience(e.target.value)} placeholder="Target audience" className="w-full rounded-md border border-border bg-surface-raised/30 px-2.5 py-1.5 text-[12px] placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-accent/30" />
-      <input value={features} onChange={(e) => setFeatures(e.target.value)} placeholder="Key features (comma-separated)" className="w-full rounded-md border border-border bg-surface-raised/30 px-2.5 py-1.5 text-[12px] placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-accent/30" />
-      <input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="Tags (comma-separated)" className="w-full rounded-md border border-border bg-surface-raised/30 px-2.5 py-1.5 text-[12px] placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-accent/30" />
+      <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Product name *" aria-label="Product name" className="w-full rounded-md border border-border bg-surface-raised/30 px-2.5 py-1.5 text-[12px] placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-accent/30" />
+      <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Description" aria-label="Product description" rows={2} className="w-full rounded-md border border-border bg-surface-raised/30 px-2.5 py-1.5 text-[12px] placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-accent/30 resize-none" />
+      <input value={audience} onChange={(e) => setAudience(e.target.value)} placeholder="Target audience" aria-label="Product target audience" className="w-full rounded-md border border-border bg-surface-raised/30 px-2.5 py-1.5 text-[12px] placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-accent/30" />
+      <input value={features} onChange={(e) => setFeatures(e.target.value)} placeholder="Key features (comma-separated)" aria-label="Product key features" className="w-full rounded-md border border-border bg-surface-raised/30 px-2.5 py-1.5 text-[12px] placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-accent/30" />
+      <input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="Tags (comma-separated)" aria-label="Product tags" className="w-full rounded-md border border-border bg-surface-raised/30 px-2.5 py-1.5 text-[12px] placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-accent/30" />
+      {error && <p role="alert" className="text-[11px] text-danger">{error}</p>}
       <div className="flex items-center gap-2">
         <button onClick={handleSave} disabled={saving || !name.trim()} className="flex items-center gap-1 rounded-md bg-accent px-3 py-1 text-[11px] font-semibold text-accent-foreground hover:opacity-90 disabled:opacity-50">
           {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plus className="h-3 w-3" />}Save

@@ -5,7 +5,7 @@ import {
   useCallback,
   useContext,
   useEffect,
-  useState,
+  useSyncExternalStore,
 } from "react";
 
 type Theme = "light" | "dark";
@@ -34,21 +34,40 @@ function applyTheme(t: Theme) {
   setTimeout(() => root.classList.remove("theme-transition"), 350);
 }
 
-export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const [theme, setThemeState] = useState<Theme>("dark");
+const THEME_EVENT = "rf-theme-change";
 
-  // Read from localStorage on mount
+function subscribeTheme(onStoreChange: () => void) {
+  window.addEventListener("storage", onStoreChange);
+  window.addEventListener(THEME_EVENT, onStoreChange);
+  return () => {
+    window.removeEventListener("storage", onStoreChange);
+    window.removeEventListener(THEME_EVENT, onStoreChange);
+  };
+}
+
+function getThemeSnapshot(): Theme {
+  return localStorage.getItem("rf_theme") === "light" ? "light" : "dark";
+}
+
+function getServerThemeSnapshot(): Theme {
+  return "dark";
+}
+
+export function ThemeProvider({ children }: { children: React.ReactNode }) {
+  const theme = useSyncExternalStore(
+    subscribeTheme,
+    getThemeSnapshot,
+    getServerThemeSnapshot,
+  );
+
   useEffect(() => {
-    const stored = localStorage.getItem("rf_theme");
-    const t: Theme = stored === "light" ? "light" : "dark";
-    setThemeState(t);
-    applyTheme(t);
-  }, []);
+    applyTheme(theme);
+  }, [theme]);
 
   const setTheme = useCallback((t: Theme) => {
-    setThemeState(t);
     localStorage.setItem("rf_theme", t);
     applyTheme(t);
+    window.dispatchEvent(new Event(THEME_EVENT));
   }, []);
 
   const toggle = useCallback(() => {
