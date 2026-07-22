@@ -10,6 +10,9 @@ out/
 # Build
 dist/
 build/
+coverage/
+htmlcov/
+.coverage
 
 # Environment & secrets
 .env
@@ -33,9 +36,7 @@ __pycache__/
 # Backend
 backend/.venv/
 backend/data/
-backend/src/data/
 backend/.env
-backend/backend/
 
 # Frontend
 frontend/node_modules/
