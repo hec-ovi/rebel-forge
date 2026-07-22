@@ -1,15 +1,17 @@
 """
 Correction service — learns from user edits.
 
-Stores corrections in PostgreSQL for proper querying, filtering by platform,
-and future pgvector semantic search.
+Corrections are stored through the mapped `Correction` model so UUID binding
+follows the dialect in use, instead of raw SQL that assumes one UUID text form.
 """
-import json
+
 import logging
 from uuid import UUID
 
-from sqlalchemy import text as sql_text
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+
+from rebel_forge_backend.db.models import Correction
 
 logger = logging.getLogger("rebel_forge_backend.corrections")
 
@@ -28,80 +30,72 @@ def store_correction(
     rating = (context or {}).get("rating", 3)
     feedback = (context or {}).get("feedback", "")
     source = (context or {}).get("source", "training")
-    had_edits = original_text != corrected_text
 
-    db.execute(sql_text(
-        """INSERT INTO corrections (workspace_id, draft_id, original_text, corrected_text, context, platform, rating, feedback, had_edits, source)
-           VALUES (:wid, :did, :orig, :corr, :ctx, :platform, :rating, :feedback, :had_edits, :source)"""
-    ), {
-        "wid": str(workspace_id),
-        "did": str(draft_id) if draft_id else None,
-        "orig": original_text[:500],
-        "corr": corrected_text[:500],
-        "ctx": json.dumps(context) if context else None,
-        "platform": platform,
-        "rating": rating,
-        "feedback": feedback,
-        "had_edits": had_edits,
-        "source": source,
-    })
-    db.commit()
-    logger.info("[corrections] Stored correction for workspace %s platform=%s", workspace_id, platform)
+    db.add(
+        Correction(
+            workspace_id=workspace_id,
+            draft_id=draft_id,
+            original_text=original_text,
+            corrected_text=corrected_text,
+            context=context or None,
+            platform=platform,
+            rating=rating,
+            feedback=feedback,
+            had_edits=original_text != corrected_text,
+            source=source,
+        )
+    )
+    db.flush()
+    logger.info(
+        "[corrections] Stored correction for workspace %s platform=%s", workspace_id, platform
+    )
 
 
-def list_corrections(db: Session, workspace_id: UUID, limit: int = 50, platform: str | None = None) -> list[dict]:
-    """List corrections as structured data, optionally filtered by platform."""
-    query = "SELECT original_text, corrected_text, platform, rating, feedback, had_edits, source, created_at FROM corrections WHERE workspace_id = :wid"
-    params: dict = {"wid": str(workspace_id)}
-
+def _recent_corrections(
+    db: Session,
+    workspace_id: UUID,
+    limit: int,
+    platform: str | None,
+) -> list[Correction]:
+    query = select(Correction).where(Correction.workspace_id == workspace_id)
     if platform:
-        query += " AND platform = :platform"
-        params["platform"] = platform
+        query = query.where(Correction.platform == platform)
+    query = query.order_by(Correction.created_at.desc()).limit(limit)
+    return list(db.scalars(query).all())
 
-    query += " ORDER BY created_at DESC LIMIT :limit"
-    params["limit"] = limit
 
-    rows = db.execute(sql_text(query), params).fetchall()
-
+def list_corrections(
+    db: Session, workspace_id: UUID, limit: int = 50, platform: str | None = None
+) -> list[dict]:
+    """List corrections as structured data, optionally filtered by platform."""
     return [
         {
-            "original": r[0],
-            "corrected": r[1],
-            "platform": r[2],
-            "rating": r[3],
-            "feedback": r[4],
-            "had_edits": r[5],
-            "source": r[6],
-            "created_at": r[7].isoformat() if r[7] else None,
+            "original": row.original_text,
+            "corrected": row.corrected_text,
+            "platform": row.platform,
+            "rating": row.rating,
+            "feedback": row.feedback,
+            "had_edits": row.had_edits,
+            "source": row.source,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
         }
-        for r in rows
+        for row in _recent_corrections(db, workspace_id, limit, platform)
     ]
 
 
 def get_corrections_context(db: Session, workspace_id: UUID, platform: str | None = None) -> str:
     """Build markdown context string for prompt injection, optionally filtered by platform."""
-    query = "SELECT platform, original_text, corrected_text, feedback, rating FROM corrections WHERE workspace_id = :wid"
-    params: dict = {"wid": str(workspace_id)}
-
-    if platform:
-        query += " AND platform = :platform"
-        params["platform"] = platform
-
-    query += " ORDER BY created_at DESC LIMIT 50"
-
-    rows = db.execute(sql_text(query), params).fetchall()
-
+    rows = _recent_corrections(db, workspace_id, 50, platform)
     if not rows:
         return ""
 
     entries = []
-    for r in rows:
-        plat, orig, corr, fb, rating = r
-        feedback_line = f"\n**Feedback:** {fb}" if fb else ""
-        entries.append(f"""## Correction ({plat or 'general'})
-**Original:** {orig[:200]}
-**Changed to:** {corr[:200]}{feedback_line}
-**Rating:** {rating or 3}/5""")
+    for row in rows:
+        feedback_line = f"\n**Feedback:** {row.feedback}" if row.feedback else ""
+        entries.append(f"""## Correction ({row.platform or "general"})
+**Original:** {row.original_text}
+**Changed to:** {row.corrected_text}{feedback_line}
+**Rating:** {row.rating or 3}/5""")
 
     content = "\n\n".join(entries)
 
@@ -116,7 +110,9 @@ Apply these preferences to all new content.
 
 def get_corrections_count(db: Session, workspace_id: UUID) -> int:
     """Count total corrections for a workspace."""
-    result = db.execute(sql_text(
-        "SELECT COUNT(*) FROM corrections WHERE workspace_id = :wid"
-    ), {"wid": str(workspace_id)}).scalar()
-    return result or 0
+    count = db.scalar(
+        select(func.count())
+        .select_from(Correction)
+        .where(Correction.workspace_id == workspace_id)
+    )
+    return count or 0

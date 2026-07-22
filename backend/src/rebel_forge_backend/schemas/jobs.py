@@ -20,4 +20,3 @@ class JobRead(BaseModel):
     completed_at: datetime | None
     created_at: datetime
     updated_at: datetime
-

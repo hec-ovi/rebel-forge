@@ -5,16 +5,16 @@ Revises: 20260322_0004
 Create Date: 2026-03-28
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 revision: str = "20260328_0005"
-down_revision: Union[str, None] = "20260322_0004"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "20260322_0004"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -22,8 +22,13 @@ def upgrade() -> None:
     op.add_column("corrections", sa.Column("platform", sa.String(50), nullable=True))
     op.add_column("corrections", sa.Column("rating", sa.Integer(), nullable=True))
     op.add_column("corrections", sa.Column("feedback", sa.Text(), nullable=True))
-    op.add_column("corrections", sa.Column("had_edits", sa.Boolean(), nullable=True, server_default="false"))
-    op.add_column("corrections", sa.Column("source", sa.String(50), nullable=True, server_default="'training'"))
+    op.add_column(
+        "corrections", sa.Column("had_edits", sa.Boolean(), nullable=True, server_default="false")
+    )
+    op.add_column(
+        "corrections",
+        sa.Column("source", sa.String(50), nullable=True, server_default=sa.text("'training'")),
+    )
     op.create_index("ix_corrections_platform", "corrections", ["workspace_id", "platform"])
 
     # Platform style descriptions
@@ -33,10 +38,22 @@ def upgrade() -> None:
         sa.Column("workspace_id", sa.UUID(), sa.ForeignKey("workspaces.id"), nullable=False),
         sa.Column("platform", sa.String(50), nullable=False),
         sa.Column("style_description", sa.Text(), nullable=False, server_default=""),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
     )
-    op.create_index("ix_platform_styles_workspace", "platform_styles", ["workspace_id", "platform"], unique=True)
+    op.create_index(
+        "ix_platform_styles_workspace", "platform_styles", ["workspace_id", "platform"], unique=True
+    )
 
 
 def downgrade() -> None:

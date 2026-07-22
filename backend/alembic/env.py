@@ -1,15 +1,16 @@
 import sys
-from pathlib import Path
 from logging.config import fileConfig
+from pathlib import Path
+
+from sqlalchemy import engine_from_config, pool
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from rebel_forge_backend.core.config import get_settings
-from rebel_forge_backend.db.base import Base
 from rebel_forge_backend.db import models  # noqa: F401
+from rebel_forge_backend.db.base import Base
 
 config = context.config
 settings = get_settings()

@@ -2,6 +2,9 @@ from dataclasses import dataclass
 
 import httpx
 
+from rebel_forge_backend.core.integrations import META_GRAPH_API_VERSION
+from rebel_forge_backend.providers.publishers.formatting import format_platform_post
+
 
 @dataclass
 class PublishResult:
@@ -9,6 +12,7 @@ class PublishResult:
     platform_post_id: str | None = None
     url: str | None = None
     error: str | None = None
+    ambiguous: bool = False
 
 
 class ThreadsPublisher:
@@ -24,7 +28,7 @@ class ThreadsPublisher:
             with httpx.Client(timeout=30.0) as client:
                 # Step 1: Create media container
                 r = client.post(
-                    f"https://graph.threads.net/v1.0/{self.user_id}/threads",
+                    f"https://graph.threads.net/{META_GRAPH_API_VERSION}/{self.user_id}/threads",
                     params={
                         "media_type": "TEXT",
                         "text": text,
@@ -33,7 +37,9 @@ class ThreadsPublisher:
                 )
 
                 if r.status_code != 200:
-                    return PublishResult(success=False, error=f"Threads container failed: {r.text[:200]}")
+                    return PublishResult(
+                        success=False, error=f"Threads container failed: {r.text[:200]}"
+                    )
 
                 container_id = r.json().get("id")
                 if not container_id:
@@ -41,7 +47,7 @@ class ThreadsPublisher:
 
                 # Step 2: Publish the container
                 r = client.post(
-                    f"https://graph.threads.net/v1.0/{self.user_id}/threads_publish",
+                    f"https://graph.threads.net/{META_GRAPH_API_VERSION}/{self.user_id}/threads_publish",
                     params={
                         "creation_id": container_id,
                         "access_token": self.access_token,
@@ -54,7 +60,7 @@ class ThreadsPublisher:
                     post_url = f"https://www.threads.net/@/post/{post_id}"
                     try:
                         pr = client.get(
-                            f"https://graph.threads.net/v1.0/{post_id}",
+                            f"https://graph.threads.net/{META_GRAPH_API_VERSION}/{post_id}",
                             params={"fields": "permalink", "access_token": self.access_token},
                         )
                         if pr.status_code == 200:
@@ -67,13 +73,13 @@ class ThreadsPublisher:
                         url=post_url,
                     )
                 else:
-                    return PublishResult(success=False, error=f"Threads publish failed: {r.text[:200]}")
+                    return PublishResult(
+                        success=False, error=f"Threads publish failed: {r.text[:200]}"
+                    )
 
         except Exception as e:
-            return PublishResult(success=False, error=str(e))
+            return PublishResult(success=False, error=str(e), ambiguous=True)
 
     def format_post(self, caption: str, hashtags: list[str]) -> str:
         """Format caption with hashtags for Threads (max 500 chars)."""
-        tags = " ".join(f"#{tag.lstrip('#')}" for tag in hashtags[:10])
-        full = f"{caption}\n\n{tags}" if tags else caption
-        return full[:500]
+        return format_platform_post("threads", caption, hashtags)

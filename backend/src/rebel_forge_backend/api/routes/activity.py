@@ -13,7 +13,7 @@ router = APIRouter()
 
 @router.get("/activity")
 def list_activity(
-    limit: int = Query(default=50, le=200),
+    limit: int = Query(default=50, ge=1, le=200),
     event_type: str | None = None,
     before: str | None = None,
     db: Session = Depends(get_db),
@@ -35,6 +35,7 @@ def list_activity(
 
     if before:
         from uuid import UUID as _UUID
+
         try:
             before_event = db.get(Event, _UUID(before))
             if before_event:

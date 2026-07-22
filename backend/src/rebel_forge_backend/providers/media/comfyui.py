@@ -2,18 +2,19 @@
 ComfyUI provider — generates images via ComfyUI API.
 Uses WebSocket for real-time completion notification instead of polling.
 """
+
 import json
 import logging
 import random
 import uuid
 from dataclasses import dataclass
-from pathlib import Path
 
 import httpx
 
-logger = logging.getLogger("rebel_forge_backend.comfyui")
+from rebel_forge_backend.core.config import Settings, get_settings
+from rebel_forge_backend.core.paths import prompts_path
 
-WORKFLOW_PATH = Path(__file__).resolve().parents[4] / "prompts" / "comfyui_workflow.json"
+logger = logging.getLogger("rebel_forge_backend.comfyui")
 
 
 @dataclass
@@ -24,9 +25,16 @@ class ImageResult:
     error: str | None = None
 
 
-def _load_workflow(prompt: str, width: int = 1024, height: int = 1024) -> dict:
+def _load_workflow(
+    prompt: str,
+    width: int = 1024,
+    height: int = 1024,
+    *,
+    settings: Settings | None = None,
+) -> dict:
     """Load the verified workflow template and inject the prompt and dimensions."""
-    with open(WORKFLOW_PATH) as f:
+    workflow_path = prompts_path(settings or get_settings(), "comfyui_workflow.json")
+    with workflow_path.open(encoding="utf-8") as f:
         workflow = json.load(f)
 
     workflow["76"]["inputs"]["value"] = prompt
@@ -41,13 +49,14 @@ def _load_workflow(prompt: str, width: int = 1024, height: int = 1024) -> dict:
 class ComfyUIProvider:
     """Generate images via ComfyUI API with WebSocket completion tracking."""
 
-    def __init__(self, base_url: str = "http://127.0.0.1:8188") -> None:
-        self.base_url = base_url.rstrip("/")
+    def __init__(self, settings: Settings | None = None, *, base_url: str = "") -> None:
+        self.settings = settings or get_settings()
+        self.base_url = (base_url or self.settings.comfyui_base_url).rstrip("/")
         self.ws_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
 
     def generate_image(self, prompt: str, width: int = 1024, height: int = 1024) -> ImageResult:
         """Generate an image. Uses WebSocket to wait for completion."""
-        workflow = _load_workflow(prompt, width, height)
+        workflow = _load_workflow(prompt, width, height, settings=self.settings)
         client_id = str(uuid.uuid4())
 
         try:
@@ -68,6 +77,7 @@ class ComfyUIProvider:
 
             # Wait for completion via WebSocket
             import websocket
+
             ws = websocket.WebSocket()
             ws.settimeout(600)  # 10 min max
             ws.connect(f"{self.ws_url}/ws?clientId={client_id}")
@@ -81,14 +91,19 @@ class ComfyUIProvider:
 
                         if msg_type == "executing":
                             exec_data = data.get("data", {})
-                            if exec_data.get("prompt_id") == prompt_id and exec_data.get("node") is None:
+                            if (
+                                exec_data.get("prompt_id") == prompt_id
+                                and exec_data.get("node") is None
+                            ):
                                 # Execution complete
                                 logger.info("[comfyui] Execution complete for %s", prompt_id)
                                 break
 
                         if msg_type == "execution_error":
                             err = data.get("data", {})
-                            return ImageResult(success=False, error=f"ComfyUI error: {str(err)[:200]}")
+                            return ImageResult(
+                                success=False, error=f"ComfyUI error: {str(err)[:200]}"
+                            )
             finally:
                 ws.close()
 
@@ -103,7 +118,7 @@ class ComfyUIProvider:
                     return ImageResult(success=False, error="Prompt not found in history")
 
                 outputs = history[prompt_id].get("outputs", {})
-                for node_id, node_output in outputs.items():
+                for _node_id, node_output in outputs.items():
                     images = node_output.get("images", [])
                     if images:
                         img = images[0]

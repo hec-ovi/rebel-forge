@@ -5,9 +5,11 @@ S3-compatible API. Used for:
 - Media library persistence
 - Asset CDN
 """
+
 import io
 import logging
 import uuid
+from pathlib import PurePosixPath
 
 import boto3
 from botocore.config import Config
@@ -35,7 +37,7 @@ class CloudStorage:
 
     def upload_bytes(self, data: bytes, filename: str, content_type: str = "image/png") -> str:
         """Upload raw bytes to R2. Returns public URL."""
-        key = f"assets/{filename}"
+        key = self.object_key_for_filename(filename)
 
         self.client.upload_fileobj(
             io.BytesIO(data),
@@ -64,6 +66,19 @@ class CloudStorage:
 
     def delete(self, filename: str) -> None:
         """Delete a file from R2."""
-        key = f"assets/{filename}"
+        self.delete_key(self.object_key_for_filename(filename))
+
+    @staticmethod
+    def object_key_for_filename(filename: str) -> str:
+        name = PurePosixPath(filename.replace("\\", "/")).name
+        if not name or name in {".", ".."}:
+            raise ValueError("R2 filename is invalid")
+        return f"assets/{name}"
+
+    def delete_key(self, key: str) -> None:
+        """Delete a persisted Rebel Forge object key from R2."""
+        path = PurePosixPath(key)
+        if path.is_absolute() or len(path.parts) != 2 or path.parts[0] != "assets":
+            raise ValueError("R2 object key is outside the managed assets prefix")
         self.client.delete_object(Bucket=self.bucket, Key=key)
         logger.info("[cloud] Deleted %s", key)

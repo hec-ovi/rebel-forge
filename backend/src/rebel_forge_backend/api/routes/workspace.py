@@ -11,7 +11,9 @@ router = APIRouter()
 
 
 @router.get("/workspace", response_model=WorkspaceRead)
-def get_workspace(db: Session = Depends(get_db), _role: str = Depends(require_viewer)) -> WorkspaceRead:
+def get_workspace(
+    db: Session = Depends(get_db), _role: str = Depends(require_viewer)
+) -> WorkspaceRead:
     service = WorkspaceService(get_settings())
     workspace = service.get_or_create_primary_workspace(db)
     return WorkspaceRead.model_validate(workspace)

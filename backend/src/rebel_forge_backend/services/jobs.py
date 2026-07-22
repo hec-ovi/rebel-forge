@@ -16,6 +16,7 @@ class JobService:
         workspace_id: UUID,
         job_type: JobType,
         input_payload: dict,
+        commit: bool = True,
     ) -> Job:
         job = Job(
             workspace_id=workspace_id,
@@ -33,15 +34,21 @@ class JobService:
             event_type="job.queued",
             payload={"job_type": job_type.value},
         )
-        db.commit()
-        db.refresh(job)
+        if commit:
+            db.commit()
+            db.refresh(job)
         return job
 
     def get_job(self, db: Session, job_id: UUID) -> Job | None:
         return db.get(Job, job_id)
 
     def list_recent_jobs(self, db: Session, workspace_id: UUID) -> list[Job]:
-        query = select(Job).where(Job.workspace_id == workspace_id).order_by(Job.created_at.desc()).limit(20)
+        query = (
+            select(Job)
+            .where(Job.workspace_id == workspace_id)
+            .order_by(Job.created_at.desc())
+            .limit(20)
+        )
         return list(db.scalars(query).all())
 
     def claim_next_pending_job(self, db: Session) -> Job | None:

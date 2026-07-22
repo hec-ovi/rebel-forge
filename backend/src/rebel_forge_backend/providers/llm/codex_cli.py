@@ -4,12 +4,17 @@ Codex CLI draft provider — generates drafts by spawning codex exec.
 Same interface as OpenAIResponsesProvider but uses subprocess instead of HTTP.
 The model is prompted to return JSON directly (no tool calling needed).
 """
-import asyncio
+
 import json
 import logging
 import shutil
 import subprocess
+import tempfile
 
+from rebel_forge_backend.core.codex_isolation import (
+    CODEX_ISOLATION_ARGS,
+    codex_subprocess_environment,
+)
 from rebel_forge_backend.core.config import Settings
 from rebel_forge_backend.schemas.drafts import DraftPackageSubmission
 
@@ -34,12 +39,16 @@ IMPORTANT: Return your response as a JSON object with exactly this structure:
 Return exactly {count} draft objects. Return ONLY the JSON, no explanation, no markdown code blocks."""
 
         args = [
-            CODEX_BIN, "exec",
+            CODEX_BIN,
+            "exec",
             "--json",
-            "--color", "never",
-            "--sandbox", "read-only",
+            "--color",
+            "never",
+            "--sandbox",
+            "read-only",
             "--skip-git-repo-check",
             "--ephemeral",
+            *CODEX_ISOLATION_ARGS,
         ]
 
         if self._model and self._model != "codex":
@@ -51,17 +60,20 @@ Return exactly {count} draft objects. Return ONLY the JSON, no explanation, no m
         logger.info("[codex_cli] generating %d drafts (prompt=%d chars)", count, len(full_prompt))
 
         try:
-            proc = subprocess.run(
-                args,
-                input=full_prompt,
-                capture_output=True,
-                text=True,
-                timeout=180,
-            )
-        except subprocess.TimeoutExpired:
-            raise RuntimeError("Codex CLI timed out after 180s")
-        except FileNotFoundError:
-            raise RuntimeError(f"Codex CLI binary not found at {CODEX_BIN}")
+            with tempfile.TemporaryDirectory(prefix="rebel-forge-codex-") as isolated_dir:
+                proc = subprocess.run(
+                    args,
+                    input=full_prompt,
+                    capture_output=True,
+                    text=True,
+                    timeout=180,
+                    cwd=isolated_dir,
+                    env=codex_subprocess_environment(isolated_dir),
+                )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("Codex CLI timed out after 180s") from exc
+        except FileNotFoundError as exc:
+            raise RuntimeError(f"Codex CLI binary not found at {CODEX_BIN}") from exc
 
         # Parse JSONL output
         text = ""
@@ -89,7 +101,7 @@ Return exactly {count} draft objects. Return ONLY the JSON, no explanation, no m
         # Strip markdown code blocks if present
         if text.startswith("```"):
             lines = text.split("\n")
-            lines = [l for l in lines if not l.strip().startswith("```")]
+            lines = [line for line in lines if not line.strip().startswith("```")]
             text = "\n".join(lines).strip()
 
         # Find the JSON object
@@ -100,7 +112,12 @@ Return exactly {count} draft objects. Return ONLY the JSON, no explanation, no m
 
         try:
             data = json.loads(text[start:end])
-        except json.JSONDecodeError as e:
-            raise RuntimeError(f"Failed to parse Codex JSON: {e}\nRaw: {text[:300]}")
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Failed to parse Codex JSON: {exc}\nRaw: {text[:300]}") from exc
 
-        return DraftPackageSubmission.model_validate(data)
+        submission = DraftPackageSubmission.model_validate(data)
+        if len(submission.drafts) != count:
+            raise ValueError(
+                f"Codex returned {len(submission.drafts)} drafts, but exactly {count} were requested."
+            )
+        return submission

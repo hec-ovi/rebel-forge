@@ -1,23 +1,41 @@
 """
-Account reset — wipe all data except API keys.
-Clears database, corrections, training data, auth tokens.
+Account reset clears application data and auth tokens.
+Credentials in the backend environment file are preserved. Provider overrides stored in
+the brand profile are removed with the rest of the workspace data.
 """
+
 import logging
+import shutil
 from pathlib import Path
 
-from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 
-from rebel_forge_backend.api.auth import require_owner
+from rebel_forge_backend.api.auth import clear_token_cache, get_token_file, require_owner
+from rebel_forge_backend.core.config import get_settings
+from rebel_forge_backend.core.paths import BACKEND_ROOT, data_path, resolve_runtime_path
 from rebel_forge_backend.db.session import get_db
 
 logger = logging.getLogger("rebel_forge_backend.reset")
 
 router = APIRouter()
 
-DATA_DIR = Path(__file__).resolve().parents[4] / "data"
-SRC_DATA_DIR = Path(__file__).resolve().parents[2] / "data"
+
+def _remove_reset_directory(path: Path) -> None:
+    """Remove a configured data directory while refusing broad protected paths."""
+    resolved = path.resolve()
+    protected = {
+        Path(resolved.anchor),
+        Path.home().resolve(),
+        BACKEND_ROOT.resolve(),
+        BACKEND_ROOT.parent.resolve(),
+    }
+    if any(item == resolved or item.is_relative_to(resolved) for item in protected):
+        raise RuntimeError(f"Refusing to remove broad reset path: {resolved}")
+    if resolved.exists():
+        shutil.rmtree(resolved)
+        logger.info("[reset] Cleared %s", resolved)
 
 
 @router.post("/account/reset")
@@ -29,75 +47,61 @@ def reset_account(db: Session = Depends(get_db), _role: str = Depends(require_ow
     - Corrections and training data files
     - Auth tokens (will regenerate on next request)
 
-    Does NOT delete:
-    - API keys in .env
-    - Platform connections
-    - Database schema (tables stay, data goes)
+    Does not delete credentials in backend/.env or the database schema. Provider
+    configuration stored inside the deleted brand profile must be reconfigured.
     """
     try:
-        # Clear all tables in order (foreign keys matter)
-        db.execute(text("DELETE FROM metric_snapshots"))
-        db.execute(text("DELETE FROM events"))
-        db.execute(text("DELETE FROM published_posts"))
-        db.execute(text("DELETE FROM assets"))
-        db.execute(text("DELETE FROM content_drafts"))
-        db.execute(text("DELETE FROM jobs"))
-        try:
-            db.execute(text("DELETE FROM conversations"))
-        except Exception:
-            pass
-        try:
-            db.execute(text("DELETE FROM corrections"))
-        except Exception:
-            pass
-        try:
-            db.execute(text("DELETE FROM platform_styles"))
-        except Exception:
-            pass
-        db.execute(text("DELETE FROM brand_profiles"))
-        db.execute(text("DELETE FROM workspaces"))
+        # Clear child tables before their parents so the transaction remains valid.
+        tables = (
+            "metric_snapshots",
+            "published_posts",
+            "publish_jobs",
+            "assets",
+            "corrections",
+            "content_drafts",
+            "conversations",
+            "platform_styles",
+            "events",
+            "publish_accounts",
+            "jobs",
+            "brand_profiles",
+            "workspaces",
+        )
+        for table in tables:
+            db.execute(text(f"DELETE FROM {table}"))
         db.commit()
         logger.info("[reset] Database cleared")
 
-        # Clear corrections files
-        for corrections_dir in [DATA_DIR / "corrections", SRC_DATA_DIR / "corrections"]:
-            if corrections_dir.exists():
-                for f in corrections_dir.iterdir():
-                    f.unlink()
-                logger.info("[reset] Corrections cleared: %s", corrections_dir)
+        settings = get_settings()
+        reset_directories = {
+            data_path(settings, "corrections"),
+            data_path(settings, "style_learning"),
+            data_path(settings, "training"),
+            resolve_runtime_path(settings.storage_base_path),
+        }
+        for directory in reset_directories:
+            _remove_reset_directory(directory)
 
-        # Clear training data
-        for training_dir in [DATA_DIR / "training", SRC_DATA_DIR / "training"]:
-            if training_dir.exists():
-                for f in training_dir.iterdir():
-                    f.unlink()
-                logger.info("[reset] Training data cleared: %s", training_dir)
-
-        # Clear auth tokens (will regenerate)
-        for auth_file in [DATA_DIR / "auth_tokens.json", SRC_DATA_DIR / "auth_tokens.json"]:
-            if auth_file.exists():
-                auth_file.unlink()
-                logger.info("[reset] Auth tokens cleared: %s", auth_file)
-
-        # Clear settings cache so fresh workspace is created
-        from rebel_forge_backend.core.config import get_settings
+        token_file = get_token_file(settings)
+        token_file.unlink(missing_ok=True)
+        clear_token_cache()
         get_settings.cache_clear()
-
-        # Clear auth token cache
-        from rebel_forge_backend.api.auth import _tokens
-        import rebel_forge_backend.api.auth as auth_module
-        auth_module._tokens = None
 
         return {
             "status": "reset_complete",
-            "message": "All data cleared. API keys preserved. Log out and log back in with your new token.",
+            "message": (
+                "Application data cleared. Environment credentials were preserved; "
+                "database-stored provider selection was removed."
+            ),
             "actions_needed": [
                 "Log out from the frontend",
-                "Get new token: curl localhost:8080/v1/auth/tokens",
+                "Run rebel-forge-tokens on the API host to generate new login tokens",
+                "Reconfigure the active LLM provider if it was stored in the workspace",
                 "Log in with new token",
             ],
         }
 
-    except Exception as e:
-        logger.error("[reset] Failed: %s", e)
-        return {"status": "error", "error": str(e)}
+    except Exception as exc:
+        db.rollback()
+        logger.exception("[reset] Failed")
+        raise HTTPException(status_code=500, detail="Account reset failed") from exc

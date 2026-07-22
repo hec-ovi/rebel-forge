@@ -25,27 +25,55 @@ class DraftRead(BaseModel):
 
 
 class DraftGenerationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     platform: str = "instagram"
     objective: str = "increase engagement"
     count: int = Field(default=2, ge=1, le=7)
     brief: str | None = None
     context_notes: str | None = None
     auto_approve: bool = False
-    auto_publish: bool = False  # implies auto_approve
     generate_image: bool | None = None  # None = platform default
 
     @field_validator("platform")
     @classmethod
     def normalize_platform(cls, v: str) -> str:
-        return v.strip().lower()
+        normalized = v.strip().lower()
+        aliases = {"twitter": "x", "fb": "facebook", "ig": "instagram"}
+        normalized = aliases.get(normalized, normalized)
+        supported = {"x", "linkedin", "facebook", "instagram", "threads"}
+        if normalized not in supported:
+            raise ValueError(f"Unsupported platform: {v}")
+        return normalized
 
-    @field_validator("count", mode="before")
+    @field_validator("brief", "context_notes")
     @classmethod
-    def coerce_count(cls, v: object) -> int:
-        try:
-            return int(v)
-        except (TypeError, ValueError):
-            return 2
+    def strip_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("Value cannot be blank")
+        return value
+
+
+class DraftUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    caption: str | None = Field(default=None, min_length=1)
+    hook: str | None = Field(default=None, min_length=1)
+    cta: str | None = Field(default=None, min_length=1)
+    concept: str | None = Field(default=None, min_length=1)
+
+    @field_validator("caption", "hook", "cta", "concept")
+    @classmethod
+    def strip_content(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("Draft content cannot be blank")
+        return value
 
 
 class DraftPackageItem(BaseModel):
@@ -62,10 +90,8 @@ class DraftPackageItem(BaseModel):
     @field_validator("hashtags")
     @classmethod
     def ensure_hashtags(cls, value: list[str]) -> list[str]:
-        cleaned = [tag.strip() for tag in value if tag and tag.strip()]
-        return cleaned[:12]
+        return [tag.strip() for tag in value if tag and tag.strip()]
 
 
 class DraftPackageSubmission(BaseModel):
     drafts: list[DraftPackageItem]
-

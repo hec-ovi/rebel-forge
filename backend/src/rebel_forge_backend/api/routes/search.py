@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from rebel_forge_backend.api.auth import require_owner
 from rebel_forge_backend.core.config import get_settings
@@ -9,8 +9,16 @@ router = APIRouter()
 
 
 class SearchRequest(BaseModel):
-    query: str
-    limit: int = 5
+    query: str = Field(min_length=1)
+    limit: int = Field(default=5, ge=1, le=20)
+
+    @field_validator("query")
+    @classmethod
+    def strip_query(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Search query cannot be blank")
+        return value
 
 
 class SearchResult(BaseModel):

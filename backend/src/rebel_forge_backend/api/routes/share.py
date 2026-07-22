@@ -1,12 +1,14 @@
 """
-Shareable approval links — clients can view and approve content without login.
-Uses the viewer token as a lightweight auth for shared views.
+Shareable approval links let clients view and approve selected content without login.
+Possession of the random share ID grants access until expiry.
 """
-import secrets
-from datetime import datetime, timezone, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+import secrets
+from datetime import UTC, datetime, timedelta
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -14,14 +16,16 @@ from rebel_forge_backend.api.auth import require_owner
 from rebel_forge_backend.core.config import get_settings
 from rebel_forge_backend.db.models import ContentDraft, DraftStatus
 from rebel_forge_backend.db.session import get_db
+from rebel_forge_backend.providers.publishers.formatting import format_platform_post
+from rebel_forge_backend.services.draft_query import get_workspace_draft
 from rebel_forge_backend.services.workspace import WorkspaceService
 
 router = APIRouter()
 
 
 class ShareLinkCreate(BaseModel):
-    draft_ids: list[str] | None = None  # None = share all pending
-    expires_hours: int = 72
+    draft_ids: list[UUID] | None = Field(default=None, max_length=50)
+    expires_hours: int = Field(default=72, ge=1, le=720)
 
 
 class ShareLinkResponse(BaseModel):
@@ -59,8 +63,15 @@ def create_share_link(
 
     # Get drafts to share
     if payload.draft_ids:
-        drafts = [db.get(ContentDraft, did) for did in payload.draft_ids]
-        drafts = [d for d in drafts if d is not None]
+        requested_ids = set(payload.draft_ids)
+        drafts = db.scalars(
+            select(ContentDraft).where(
+                ContentDraft.workspace_id == workspace.id,
+                ContentDraft.id.in_(requested_ids),
+            )
+        ).all()
+        if len(drafts) != len(requested_ids):
+            raise HTTPException(status_code=404, detail="One or more drafts were not found")
     else:
         # Share all pending drafts
         drafts = db.scalars(
@@ -75,13 +86,13 @@ def create_share_link(
         raise HTTPException(status_code=400, detail="No drafts to share")
 
     share_id = secrets.token_urlsafe(16)
-    expires_at = datetime.now(timezone.utc) + timedelta(hours=payload.expires_hours)
+    expires_at = datetime.now(UTC) + timedelta(hours=payload.expires_hours)
 
     _share_store[share_id] = {
         "workspace_id": str(workspace.id),
         "draft_ids": [str(d.id) for d in drafts],
         "expires_at": expires_at.isoformat(),
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
     }
 
     return ShareLinkResponse(
@@ -101,25 +112,28 @@ def get_shared_content(share_id: str, db: Session = Depends(get_db)):
 
     # Check expiry
     expires_at = datetime.fromisoformat(share["expires_at"])
-    if datetime.now(timezone.utc) > expires_at:
+    if datetime.now(UTC) > expires_at:
         del _share_store[share_id]
         raise HTTPException(status_code=410, detail="Share link has expired")
 
     drafts = []
+    workspace_id = UUID(share["workspace_id"])
     for did in share["draft_ids"]:
-        draft = db.get(ContentDraft, did)
+        draft = get_workspace_draft(db, workspace_id=workspace_id, draft_id=did)
         if draft:
-            drafts.append(SharedDraft(
-                id=str(draft.id),
-                platform=draft.platform,
-                status=draft.status if isinstance(draft.status, str) else draft.status.value,
-                concept=draft.concept,
-                caption=draft.caption,
-                hook=draft.hook,
-                cta=draft.cta,
-                hashtags=draft.hashtags,
-                media_prompt=draft.media_prompt,
-            ))
+            drafts.append(
+                SharedDraft(
+                    id=str(draft.id),
+                    platform=draft.platform,
+                    status=draft.status if isinstance(draft.status, str) else draft.status.value,
+                    concept=draft.concept,
+                    caption=draft.caption,
+                    hook=draft.hook,
+                    cta=draft.cta,
+                    hashtags=draft.hashtags,
+                    media_prompt=draft.media_prompt,
+                )
+            )
 
     return {
         "share_id": share_id,
@@ -136,25 +150,43 @@ def approve_shared_draft(share_id: str, draft_id: str, db: Session = Depends(get
         raise HTTPException(status_code=404, detail="Share link not found or expired")
 
     expires_at = datetime.fromisoformat(share["expires_at"])
-    if datetime.now(timezone.utc) > expires_at:
+    if datetime.now(UTC) > expires_at:
         raise HTTPException(status_code=410, detail="Share link has expired")
 
     if draft_id not in share["draft_ids"]:
         raise HTTPException(status_code=403, detail="Draft not in this share")
 
-    draft = db.get(ContentDraft, draft_id)
+    draft = get_workspace_draft(
+        db,
+        workspace_id=UUID(share["workspace_id"]),
+        draft_id=draft_id,
+    )
     if not draft:
         raise HTTPException(status_code=404, detail="Draft not found")
 
     if draft.status in (DraftStatus.DRAFT.value, DraftStatus.REVIEWED.value):
+        try:
+            format_platform_post(draft.platform, draft.caption, draft.hashtags)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         draft.status = DraftStatus.APPROVED
-        db.commit()
 
         from rebel_forge_backend.services.events import record_event
-        record_event(db, workspace_id=draft.workspace_id, entity_type="content_draft",
-                     entity_id=draft.id, event_type="draft.approved",
-                     payload={"approved_via": "share_link", "share_id": share_id})
+
+        record_event(
+            db,
+            workspace_id=draft.workspace_id,
+            entity_type="content_draft",
+            entity_id=draft.id,
+            event_type="draft.approved",
+            payload={"approved_via": "share_link", "share_id": share_id},
+        )
         db.commit()
+    elif draft.status != DraftStatus.APPROVED.value:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Draft in status '{draft.status}' cannot be approved",
+        )
 
     return {"status": "approved", "draft_id": draft_id}
 
@@ -162,7 +194,7 @@ def approve_shared_draft(share_id: str, draft_id: str, db: Session = Depends(get
 @router.get("/shares")
 def list_shares(_role: str = Depends(require_owner)):
     """List active share links."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     active = []
     expired_keys = []
 
@@ -171,13 +203,15 @@ def list_shares(_role: str = Depends(require_owner)):
         if now > expires_at:
             expired_keys.append(sid)
         else:
-            active.append({
-                "share_id": sid,
-                "url": f"/share/{sid}",
-                "draft_count": len(share["draft_ids"]),
-                "expires_at": share["expires_at"],
-                "created_at": share["created_at"],
-            })
+            active.append(
+                {
+                    "share_id": sid,
+                    "url": f"/share/{sid}",
+                    "draft_count": len(share["draft_ids"]),
+                    "expires_at": share["expires_at"],
+                    "created_at": share["created_at"],
+                }
+            )
 
     # Clean expired
     for k in expired_keys:

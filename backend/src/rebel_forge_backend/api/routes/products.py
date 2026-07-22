@@ -3,8 +3,9 @@ Products/Topics — define what you're promoting so the agent knows context.
 Each product has: name, description, target audience, key features, links.
 Training corrections are linked to products so the agent learns tone per product.
 """
+
 import logging
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -27,7 +28,7 @@ class Product(BaseModel):
     target_audience: str = ""
     key_features: list[str] = []
     links: dict[str, str] = {}  # {"website": "https://...", "repo": "https://github.com/..."}
-    tags: list[str] = []  # ["ai", "open-source", "local-first"]
+    tags: list[str] = []  # ["ai", "source-available", "local-first"]
 
 
 class ProductList(BaseModel):
@@ -42,6 +43,7 @@ def _get_products(bp) -> list[dict]:
 
 def _save_products(bp, products: list[dict], db):
     from sqlalchemy.orm.attributes import flag_modified
+
     style = dict(bp.style_notes or {})
     style["products"] = list(products)
     bp.style_notes = style
@@ -58,7 +60,9 @@ def list_products(db: Session = Depends(get_db), _role: str = Depends(require_ow
 
 
 @router.post("/products", response_model=Product)
-def create_product(payload: Product, db: Session = Depends(get_db), _role: str = Depends(require_owner)):
+def create_product(
+    payload: Product, db: Session = Depends(get_db), _role: str = Depends(require_owner)
+):
     settings = get_settings()
     workspace = WorkspaceService(settings).get_or_create_primary_workspace(db)
     bp = workspace.brand_profile
@@ -76,7 +80,12 @@ def create_product(payload: Product, db: Session = Depends(get_db), _role: str =
 
 
 @router.put("/products/{product_id}", response_model=Product)
-def update_product(product_id: str, payload: Product, db: Session = Depends(get_db), _role: str = Depends(require_owner)):
+def update_product(
+    product_id: str,
+    payload: Product,
+    db: Session = Depends(get_db),
+    _role: str = Depends(require_owner),
+):
     settings = get_settings()
     workspace = WorkspaceService(settings).get_or_create_primary_workspace(db)
     bp = workspace.brand_profile
@@ -96,7 +105,9 @@ def update_product(product_id: str, payload: Product, db: Session = Depends(get_
 
 
 @router.delete("/products/{product_id}")
-def delete_product(product_id: str, db: Session = Depends(get_db), _role: str = Depends(require_owner)):
+def delete_product(
+    product_id: str, db: Session = Depends(get_db), _role: str = Depends(require_owner)
+):
     settings = get_settings()
     workspace = WorkspaceService(settings).get_or_create_primary_workspace(db)
     bp = workspace.brand_profile
@@ -111,7 +122,9 @@ def delete_product(product_id: str, db: Session = Depends(get_db), _role: str = 
 
 
 @router.get("/products/{product_id}", response_model=Product)
-def get_product(product_id: str, db: Session = Depends(get_db), _role: str = Depends(require_owner)):
+def get_product(
+    product_id: str, db: Session = Depends(get_db), _role: str = Depends(require_owner)
+):
     settings = get_settings()
     workspace = WorkspaceService(settings).get_or_create_primary_workspace(db)
     products = _get_products(workspace.brand_profile)

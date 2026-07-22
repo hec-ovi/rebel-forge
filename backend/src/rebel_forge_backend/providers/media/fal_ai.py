@@ -4,6 +4,7 @@ fal.ai image generation provider — cloud alternative to ComfyUI.
 Uses the fal.ai REST API directly (no SDK dependency).
 Supports: FLUX schnell/dev/pro, Nano Banana 2, and any fal.ai model.
 """
+
 import logging
 from dataclasses import dataclass
 

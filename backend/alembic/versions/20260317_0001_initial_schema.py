@@ -5,17 +5,18 @@ Revises:
 Create Date: 2026-03-17 20:15:00
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
+from alembic import op
+
 # revision identifiers, used by Alembic.
 revision: str = "20260317_0001"
-down_revision: Union[str, None] = None
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = None
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -26,11 +27,18 @@ def upgrade() -> None:
         "pending", "running", "completed", "failed", name="job_status", create_type=False
     )
     draft_status = postgresql.ENUM(
-        "draft", "reviewed", "approved", "scheduled", "published", "failed",
+        "draft",
+        "reviewed",
+        "approved",
+        "scheduled",
+        "published",
+        "failed",
         name="draft_status",
         create_type=False,
     )
-    asset_status = postgresql.ENUM("pending", "ready", "failed", name="asset_status", create_type=False)
+    asset_status = postgresql.ENUM(
+        "pending", "ready", "failed", name="asset_status", create_type=False
+    )
     publish_status = postgresql.ENUM(
         "pending", "sent", "published", "failed", name="publish_status", create_type=False
     )
@@ -45,9 +53,7 @@ def upgrade() -> None:
     postgresql.ENUM(
         "draft", "reviewed", "approved", "scheduled", "published", "failed", name="draft_status"
     ).create(bind, checkfirst=True)
-    postgresql.ENUM("pending", "ready", "failed", name="asset_status").create(
-        bind, checkfirst=True
-    )
+    postgresql.ENUM("pending", "ready", "failed", name="asset_status").create(bind, checkfirst=True)
     postgresql.ENUM("pending", "sent", "published", "failed", name="publish_status").create(
         bind, checkfirst=True
     )
@@ -57,8 +63,18 @@ def upgrade() -> None:
         sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("name", sa.String(length=255), nullable=False),
         sa.Column("slug", sa.String(length=255), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("slug"),
     )
@@ -71,8 +87,18 @@ def upgrade() -> None:
         sa.Column("goals", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column("style_notes", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column("reference_examples", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.ForeignKeyConstraint(["workspace_id"], ["workspaces.id"]),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("workspace_id"),
@@ -87,11 +113,26 @@ def upgrade() -> None:
         sa.Column("result_payload", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
         sa.Column("error_message", sa.Text(), nullable=True),
         sa.Column("attempts", sa.Integer(), nullable=False),
-        sa.Column("scheduled_for", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "scheduled_for",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.ForeignKeyConstraint(["workspace_id"], ["workspaces.id"]),
         sa.PrimaryKeyConstraint("id"),
     )
@@ -112,8 +153,18 @@ def upgrade() -> None:
         sa.Column("media_prompt", sa.Text(), nullable=False),
         sa.Column("script", sa.Text(), nullable=True),
         sa.Column("metadata_json", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.ForeignKeyConstraint(["job_id"], ["jobs.id"]),
         sa.ForeignKeyConstraint(["workspace_id"], ["workspaces.id"]),
         sa.PrimaryKeyConstraint("id"),
@@ -131,8 +182,18 @@ def upgrade() -> None:
         sa.Column("storage_path", sa.Text(), nullable=True),
         sa.Column("public_url", sa.Text(), nullable=True),
         sa.Column("metadata_json", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.ForeignKeyConstraint(["draft_id"], ["content_drafts.id"]),
         sa.ForeignKeyConstraint(["job_id"], ["jobs.id"]),
         sa.ForeignKeyConstraint(["workspace_id"], ["workspaces.id"]),
@@ -145,8 +206,18 @@ def upgrade() -> None:
         sa.Column("platform", sa.String(length=50), nullable=False),
         sa.Column("account_identifier", sa.String(length=255), nullable=True),
         sa.Column("connection_metadata", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.ForeignKeyConstraint(["workspace_id"], ["workspaces.id"]),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("workspace_id", "platform", name="uq_publish_account"),
@@ -161,8 +232,18 @@ def upgrade() -> None:
         sa.Column("request_payload", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column("response_payload", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
         sa.Column("error_message", sa.Text(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.ForeignKeyConstraint(["draft_id"], ["content_drafts.id"]),
         sa.ForeignKeyConstraint(["workspace_id"], ["workspaces.id"]),
         sa.PrimaryKeyConstraint("id"),
@@ -176,7 +257,12 @@ def upgrade() -> None:
         sa.Column("platform_post_id", sa.String(length=255), nullable=False),
         sa.Column("published_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("metadata_json", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.ForeignKeyConstraint(["draft_id"], ["content_drafts.id"]),
         sa.ForeignKeyConstraint(["workspace_id"], ["workspaces.id"]),
         sa.PrimaryKeyConstraint("id"),
@@ -187,7 +273,12 @@ def upgrade() -> None:
         sa.Column("workspace_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("published_post_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("metrics", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-        sa.Column("captured_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "captured_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.ForeignKeyConstraint(["published_post_id"], ["published_posts.id"]),
         sa.ForeignKeyConstraint(["workspace_id"], ["workspaces.id"]),
         sa.PrimaryKeyConstraint("id"),
@@ -200,7 +291,12 @@ def upgrade() -> None:
         sa.Column("entity_id", postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column("event_type", sa.String(length=100), nullable=False),
         sa.Column("payload", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.ForeignKeyConstraint(["workspace_id"], ["workspaces.id"]),
         sa.PrimaryKeyConstraint("id"),
     )

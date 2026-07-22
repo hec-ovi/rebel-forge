@@ -29,7 +29,7 @@ Return a JSON object with these exact fields:
     }
   ],
   "profile_image_prompt": "Image generation prompt for the profile picture/avatar",
-  "content_strategy": "Brief 2-sentence content strategy recommendation"
+  "content_strategy": "Content strategy recommendation"
 }
 ```
 

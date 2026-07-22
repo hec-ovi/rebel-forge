@@ -1,12 +1,15 @@
-import hmac
-import hashlib
 import base64
+import hashlib
+import hmac
 import time
 import uuid
 from dataclasses import dataclass
 from urllib.parse import quote
 
 import httpx
+
+from rebel_forge_backend.core.integrations import X_API_BASE
+from rebel_forge_backend.providers.publishers.formatting import format_platform_post
 
 
 @dataclass
@@ -15,6 +18,7 @@ class PublishResult:
     platform_post_id: str | None = None
     url: str | None = None
     error: str | None = None
+    ambiguous: bool = False
 
 
 class XPublisher:
@@ -43,23 +47,23 @@ class XPublisher:
             "oauth_version": "1.0",
         }
         param_str = "&".join(
-            f"{quote(k, safe='')}={quote(str(v), safe='')}"
-            for k, v in sorted(oauth_params.items())
+            f"{quote(k, safe='')}={quote(str(v), safe='')}" for k, v in sorted(oauth_params.items())
         )
         base_string = f"{method.upper()}&{quote(url, safe='')}&{quote(param_str, safe='')}"
-        signing_key = f"{quote(self.consumer_secret, safe='')}&{quote(self.access_token_secret, safe='')}"
+        signing_key = (
+            f"{quote(self.consumer_secret, safe='')}&{quote(self.access_token_secret, safe='')}"
+        )
         signature = base64.b64encode(
             hmac.new(signing_key.encode(), base_string.encode(), hashlib.sha1).digest()
         ).decode()
         oauth_params["oauth_signature"] = signature
         return "OAuth " + ", ".join(
-            f'{quote(k, safe="")}="{quote(v, safe="")}"'
-            for k, v in sorted(oauth_params.items())
+            f'{quote(k, safe="")}="{quote(v, safe="")}"' for k, v in sorted(oauth_params.items())
         )
 
     def publish_text(self, text: str) -> PublishResult:
         """Publish a text-only tweet."""
-        url = "https://api.x.com/2/tweets"
+        url = f"{X_API_BASE}/tweets"
         auth = self._oauth_header("POST", url)
 
         r = httpx.post(
@@ -78,7 +82,7 @@ class XPublisher:
             return PublishResult(
                 success=True,
                 platform_post_id=post_id,
-                url=f"https://x.com/hec_ovi/status/{post_id}",
+                url=f"https://x.com/i/web/status/{post_id}",
             )
         else:
             return PublishResult(
@@ -88,21 +92,4 @@ class XPublisher:
 
     def format_draft_as_tweet(self, caption: str, hashtags: list[str]) -> str:
         """Format a draft's caption and hashtags into a tweet (max 280 chars)."""
-        # Try with hashtags first
-        if hashtags:
-            tags = " ".join(f"#{tag.lstrip('#')}" for tag in hashtags[:5])
-            full = f"{caption}\n\n{tags}"
-            # If fits, use it
-            if len(full) <= 280:
-                return full
-            # Try fewer hashtags
-            for n in range(4, 0, -1):
-                tags = " ".join(f"#{tag.lstrip('#')}" for tag in hashtags[:n])
-                full = f"{caption}\n\n{tags}"
-                if len(full) <= 280:
-                    return full
-            # Still too long — caption only, trimmed
-        # No hashtags or all combos too long
-        if len(caption) <= 280:
-            return caption
-        return caption[:277] + "..."
+        return format_platform_post("x", caption, hashtags)

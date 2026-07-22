@@ -9,6 +9,4 @@ class GeneratedImageResult(Protocol):
 
 
 class MediaProvider(Protocol):
-    def generate_image(self, *, prompt: str, size: str) -> GeneratedImageResult:
-        ...
-
+    def generate_image(self, *, prompt: str, size: str) -> GeneratedImageResult: ...

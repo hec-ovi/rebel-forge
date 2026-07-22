@@ -7,7 +7,7 @@ You will receive recent post data (concepts, platforms, engagement metrics if av
 Return a JSON object:
 ```json
 {
-  "summary": "1-2 sentence performance overview",
+  "summary": "Performance overview",
   "top_performing": ["what worked and why"],
   "underperforming": ["what didn't work and why"],
   "exploit": ["patterns to double down on"],

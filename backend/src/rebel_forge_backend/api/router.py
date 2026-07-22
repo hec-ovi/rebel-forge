@@ -1,6 +1,29 @@
 from fastapi import APIRouter
 
-from rebel_forge_backend.api.routes import activity, auth_routes, chat, config, connections, drafts, fetch_posts, health, heartbeat, inbox, jobs, media, notifications, platforms, products, providers, publish, readiness, reset, sanity, search, share, training, workspace
+from rebel_forge_backend.api.routes import (
+    activity,
+    auth_routes,
+    chat,
+    config,
+    connections,
+    drafts,
+    fetch_posts,
+    health,
+    heartbeat,
+    jobs,
+    media,
+    platforms,
+    products,
+    providers,
+    publish,
+    readiness,
+    reset,
+    sanity,
+    search,
+    share,
+    training,
+    workspace,
+)
 
 api_router = APIRouter()
 api_router.include_router(health.router, tags=["health"])
@@ -17,14 +40,11 @@ api_router.include_router(heartbeat.router, prefix="/v1", tags=["heartbeat"])
 api_router.include_router(activity.router, prefix="/v1", tags=["activity"])
 api_router.include_router(connections.router, prefix="/v1", tags=["connections"])
 api_router.include_router(platforms.router, prefix="/v1", tags=["platforms"])
-api_router.include_router(notifications.router, prefix="/v1", tags=["notifications"])
 api_router.include_router(training.router, prefix="/v1", tags=["training"])
 api_router.include_router(sanity.router, prefix="/v1", tags=["sanity"])
-api_router.include_router(inbox.router, prefix="/v1", tags=["inbox"])
 api_router.include_router(share.router, prefix="/v1", tags=["share"])
 api_router.include_router(products.router, prefix="/v1", tags=["products"])
 api_router.include_router(providers.router, prefix="/v1", tags=["providers"])
 api_router.include_router(readiness.router, prefix="/v1", tags=["readiness"])
 api_router.include_router(reset.router, prefix="/v1", tags=["reset"])
 api_router.include_router(fetch_posts.router, prefix="/v1", tags=["fetch_posts"])
-

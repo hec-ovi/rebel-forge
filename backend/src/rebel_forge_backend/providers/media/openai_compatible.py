@@ -40,8 +40,9 @@ class OpenAIImagesProvider:
         headers = {"Content-Type": "application/json"}
         if self.settings.media_api_key:
             headers["Authorization"] = f"Bearer {self.settings.media_api_key}"
+        timeout = httpx.Timeout(300.0, connect=10.0)
         return httpx.Client(
-            base_url=self.settings.media_base_url.rstrip("/"), headers=headers, timeout=None
+            base_url=self.settings.media_base_url.rstrip("/"), headers=headers, timeout=timeout
         )
 
     @staticmethod

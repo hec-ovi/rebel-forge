@@ -4,15 +4,16 @@ Unified context builder — assembles the full context window for any agent mode
 Every mode (chat, training, heartbeat, draft generation) gets the same rich context,
 structured consistently. The only thing that changes is the `mode` section.
 """
-import json
+
 import logging
-from uuid import UUID
 
 from sqlalchemy import text as sql_text
 from sqlalchemy.orm import Session
 
 from rebel_forge_backend.core.config import Settings
-from rebel_forge_backend.services.corrections import get_corrections_context, list_corrections
+from rebel_forge_backend.core.paths import data_path
+from rebel_forge_backend.core.style_notes import public_style_notes
+from rebel_forge_backend.services.corrections import get_corrections_context
 from rebel_forge_backend.services.workspace import WorkspaceService
 
 logger = logging.getLogger("rebel_forge_backend.context_builder")
@@ -41,12 +42,13 @@ def build_context(
     """
     workspace = WorkspaceService(settings).get_or_create_primary_workspace(db)
     bp = workspace.brand_profile
+    style_notes = public_style_notes(bp.style_notes if bp else None)
 
     sections = []
 
     # === ROLE ===
     sections.append("""## Role
-You are Rebel, the AI agent behind Rebel Forge — an open-source, local-first social media management system.
+You are Rebel, the AI agent behind Rebel Forge, a source-available, local-first social media management system.
 You manage content across X, LinkedIn, Instagram, Threads, and Facebook.
 You are direct, fast, and production-focused. No filler, no fluff.""")
 
@@ -72,25 +74,32 @@ You are direct, fast, and production-focused. No filler, no fluff.""")
                         onboarding.append(f"- Platforms: {', '.join(platforms)}")
             else:
                 onboarding.append(f"- Goals: {goals}")
-        if bp.style_notes:
-            sn = bp.style_notes
+        if style_notes:
+            sn = style_notes
             if sn.get("content_types"):
                 ct = sn["content_types"]
-                onboarding.append(f"- Content Types: {', '.join(ct) if isinstance(ct, list) else ct}")
+                onboarding.append(
+                    f"- Content Types: {', '.join(ct) if isinstance(ct, list) else ct}"
+                )
             if sn.get("frequency"):
                 onboarding.append(f"- Posting Frequency: {sn['frequency']}")
             if sn.get("inspiration"):
                 onboarding.append(f"- Inspiration: {sn['inspiration']}")
             if sn.get("tone"):
                 tone = sn["tone"]
-                onboarding.append(f"- Tone Tags: {', '.join(tone) if isinstance(tone, list) else tone}")
+                onboarding.append(
+                    f"- Tone Tags: {', '.join(tone) if isinstance(tone, list) else tone}"
+                )
         if bp.reference_examples:
             refs = bp.reference_examples
             if isinstance(refs, list) and refs:
                 onboarding.append(f"- Reference Accounts: {', '.join(str(r) for r in refs)}")
 
         if onboarding:
-            sections.append("## Onboarding Profile\nThe user completed onboarding with these preferences:\n" + "\n".join(onboarding))
+            sections.append(
+                "## Onboarding Profile\nThe user completed onboarding with these preferences:\n"
+                + "\n".join(onboarding)
+            )
         else:
             sections.append("## Onboarding Profile\nNot yet completed.")
     else:
@@ -98,8 +107,8 @@ You are direct, fast, and production-focused. No filler, no fluff.""")
 
     # === PRODUCTS ===
     products = []
-    if bp and bp.style_notes:
-        products = bp.style_notes.get("products", [])
+    if bp and style_notes:
+        products = style_notes.get("products", [])
     if products:
         product_lines = []
         for p in products:
@@ -111,7 +120,10 @@ You are direct, fast, and production-focused. No filler, no fluff.""")
             if p.get("tags"):
                 line += f" | Tags: {', '.join(p['tags'])}"
             product_lines.append(line)
-        sections.append("## Products / Topics\nThe user has defined these products for content creation:\n" + "\n".join(product_lines))
+        sections.append(
+            "## Products / Topics\nThe user has defined these products for content creation:\n"
+            + "\n".join(product_lines)
+        )
     else:
         sections.append("## Products / Topics\nNo products defined yet.")
 
@@ -120,23 +132,33 @@ You are direct, fast, and production-focused. No filler, no fluff.""")
     corrections_md = get_corrections_context(db, workspace.id, platform=platform)
     if corrections_md:
         platform_note = f" for {platform.upper()}" if platform else ""
-        sections.append(f"## Training History (HFRL){platform_note}\nThe user has trained you through feedback. Apply these learned patterns to ALL content:\n{corrections_md}")
+        sections.append(
+            f"## Feedback-Guided Correction Context{platform_note}\nThe user has provided edits and feedback. Apply these observed preferences to relevant content:\n{corrections_md}"
+        )
     else:
-        sections.append("## Training History\nNo training data yet. The user has not submitted corrections.")
+        sections.append(
+            "## Training History\nNo training data yet. The user has not submitted corrections."
+        )
 
     # === STYLE GUIDES ===
     try:
         # Always load general voice if it exists
-        general_row = db.execute(sql_text(
-            "SELECT style_description FROM platform_styles WHERE workspace_id = :wid AND platform = 'general' AND style_description != ''"
-        ), {"wid": str(workspace.id)}).fetchone()
+        general_row = db.execute(
+            sql_text(
+                "SELECT style_description FROM platform_styles WHERE workspace_id = :wid AND platform = 'general' AND style_description != ''"
+            ),
+            {"wid": str(workspace.id)},
+        ).fetchone()
         general_voice = general_row[0] if general_row else ""
 
         if platform:
             # Load platform-specific style
-            row = db.execute(sql_text(
-                "SELECT style_description FROM platform_styles WHERE workspace_id = :wid AND platform = :p AND style_description != ''"
-            ), {"wid": str(workspace.id), "p": platform}).fetchone()
+            row = db.execute(
+                sql_text(
+                    "SELECT style_description FROM platform_styles WHERE workspace_id = :wid AND platform = :p AND style_description != ''"
+                ),
+                {"wid": str(workspace.id), "p": platform},
+            ).fetchone()
             platform_style = row[0] if row else ""
 
             style_parts = []
@@ -145,23 +167,35 @@ You are direct, fast, and production-focused. No filler, no fluff.""")
             if platform_style:
                 style_parts.append(f"**{platform.upper()} Style:** {platform_style}")
             if style_parts:
-                sections.append(f"## Style Guide\nIMPORTANT — follow this style strictly:\n" + "\n".join(style_parts))
+                sections.append(
+                    "## Style Guide\nIMPORTANT — follow this style strictly:\n"
+                    + "\n".join(style_parts)
+                )
         else:
             # No platform filter — show all styles
-            style_rows = db.execute(sql_text(
-                "SELECT platform, style_description FROM platform_styles WHERE workspace_id = :wid AND style_description != ''"
-            ), {"wid": str(workspace.id)}).fetchall()
+            style_rows = db.execute(
+                sql_text(
+                    "SELECT platform, style_description FROM platform_styles WHERE workspace_id = :wid AND style_description != ''"
+                ),
+                {"wid": str(workspace.id)},
+            ).fetchall()
             if style_rows:
                 style_lines = [f"- **{r[0]}**: {r[1]}" for r in style_rows]
-                sections.append("## Style Guidelines\nVoice and style set by the user:\n" + "\n".join(style_lines))
+                sections.append(
+                    "## Style Guidelines\nVoice and style set by the user:\n"
+                    + "\n".join(style_lines)
+                )
     except Exception:
         pass
 
     # === CONVERSATION HISTORY ===
     try:
-        rows = db.execute(sql_text(
-            "SELECT role, content, tool_name FROM conversations WHERE workspace_id = :wid AND mode = 'general' ORDER BY created_at DESC LIMIT 20"
-        ), {"wid": str(workspace.id)}).fetchall()
+        rows = db.execute(
+            sql_text(
+                "SELECT role, content, tool_name FROM conversations WHERE workspace_id = :wid AND mode = 'general' ORDER BY created_at DESC LIMIT 20"
+            ),
+            {"wid": str(workspace.id)},
+        ).fetchall()
 
         if rows:
             history_lines = []
@@ -171,13 +205,16 @@ You are direct, fast, and production-focused. No filler, no fluff.""")
                     history_lines.append(f"- [{role}] [tool:{tool}] {content[:150]}")
                 else:
                     history_lines.append(f"- [{role}] {content[:150]}")
-            sections.append("## Recent Conversation History\nLast interactions with the user:\n" + "\n".join(history_lines))
+            sections.append(
+                "## Recent Conversation History\nLast interactions with the user:\n"
+                + "\n".join(history_lines)
+            )
     except Exception as e:
         logger.debug("[context] Failed to load conversation history: %s", e)
 
     # === PLATFORM PROFILES ===
-    if bp and bp.style_notes:
-        profiles = bp.style_notes.get("platform_profiles", {})
+    if bp and style_notes:
+        profiles = style_notes.get("platform_profiles", {})
         if profiles:
             profile_lines = []
             for platform, profile in profiles.items():
@@ -193,6 +230,7 @@ You are direct, fast, and production-focused. No filler, no fluff.""")
     systems = ["PostgreSQL database", "vLLM / Codex CLI / OpenRouter (configurable LLM)"]
     try:
         import httpx
+
         r = httpx.get(f"{settings.comfyui_base_url}/", timeout=2.0)
         if r.status_code == 200:
             systems.append(f"ComfyUI image generation at {settings.comfyui_base_url}")
@@ -204,25 +242,16 @@ You are direct, fast, and production-focused. No filler, no fluff.""")
         systems.append("Cloudflare R2 image hosting")
     sections.append("## Available Systems\n" + "\n".join(f"- {s}" for s in systems))
 
-    # === DATABASE SCHEMA (for query tool) ===
-    sections.append("""## Database Schema (for query_drafts tool)
-Table `content_drafts`:
-- id (UUID), workspace_id (UUID), platform (text), status (enum: draft/reviewed/approved/scheduled/published/failed)
-- concept (text), brief (text), caption (text), hook (text), cta (text)
-- hashtags (jsonb array), alt_text (text), media_prompt (text nullable)
-- script (text nullable), metadata_json (jsonb), created_at, updated_at
-
-Table `published_posts`:
-- id, draft_id (FK), platform, platform_post_id, published_at, url
-
-Example queries:
-- SELECT platform, status, concept, caption FROM content_drafts WHERE workspace_id = '{wid}' ORDER BY created_at DESC LIMIT 10
-- SELECT COUNT(*) as total, platform FROM content_drafts WHERE workspace_id = '{wid}' GROUP BY platform
-- SELECT * FROM content_drafts WHERE workspace_id = '{wid}' AND platform = 'x' AND status = 'published'""".replace("{wid}", str(workspace.id)))
+    # === CONTENT QUERY TOOL ===
+    sections.append("""## Content Query Tool
+The `query_drafts` tool accepts structured filters and always scopes results to this workspace.
+- resource: drafts or published_posts
+- operation: list or count
+- optional filters: platform, status, search, limit
+Never send SQL to this tool.""")
 
     # === STYLE LEARNING (from platform posts) ===
-    from pathlib import Path as _Path
-    style_dir = _Path(__file__).resolve().parents[2] / "data" / "style_learning"
+    style_dir = data_path(settings, "style_learning")
     if style_dir.exists():
         style_parts = []
         if platform:
@@ -241,7 +270,11 @@ Example queries:
                         content = content[:3000] + "\n...(truncated)"
                     style_parts.append(content)
         if style_parts:
-            sections.append("## Style Learning (from platform posts)\nThe user's actual writing style learned from their published posts:\n\n" + "\n\n---\n\n".join(style_parts))
+            sections.append(
+                "## Imported Style Examples (raw platform posts)\n"
+                "Use these as writing examples. They were not synthesized and no model training occurred:\n\n"
+                + "\n\n---\n\n".join(style_parts)
+            )
 
     # === RULES ===
     sections.append("""## Rules
@@ -249,7 +282,7 @@ Example queries:
 - Never use the long dash.
 - Never invent specific numbers, stats, or technical claims.
 - Only state facts from the user's brand profile or training data.
-- Keep posts compact. Write like a human, not like AI.""")
+- Write like a human, not like AI.""")
 
     return "\n\n".join(sections)
 
@@ -259,9 +292,10 @@ def get_mode_description(mode: str) -> str:
     descriptions = {
         "general": (
             "You are in **Rebel Chat** mode — the main interactive chat.\n"
-            "The user talks to you to generate content, search trends, manage drafts, publish posts, "
-            "and configure their brand. Use your tools when appropriate. Keep responses under 2 sentences "
-            "unless explaining something the user asked about."
+            "The user talks to you to generate content, search trends, inspect and manage drafts, "
+            "queue work, and configure their brand. Chat can never approve or publish content. "
+            "Approval and publication require an explicit action in the authenticated Drafts UI. "
+            "Use your tools when appropriate."
         ),
         "onboarding": (
             "You are in **Onboarding** mode.\n"
@@ -272,7 +306,7 @@ def get_mode_description(mode: str) -> str:
             "You are in **Training** mode.\n"
             "Generate sample content for the user to rate and correct. "
             "Use the full training history and product context to improve each generation. "
-            "The user's corrections teach you their voice through HFRL (Human Feedback Reinforcement Learning)."
+            "Use the user's saved corrections as editing preferences. No model training or weight updates occur."
         ),
         "heartbeat": (
             "You are in **Heartbeat** mode — autonomous background operation.\n"

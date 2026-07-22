@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from rebel_forge_backend.api.auth import require_owner
@@ -7,6 +7,7 @@ from rebel_forge_backend.db.models import JobType
 from rebel_forge_backend.db.session import get_db
 from rebel_forge_backend.schemas.jobs import JobRead
 from rebel_forge_backend.schemas.media import MediaGenerationRequest
+from rebel_forge_backend.services.draft_query import get_workspace_draft
 from rebel_forge_backend.services.jobs import JobService
 from rebel_forge_backend.services.workspace import WorkspaceService
 
@@ -15,9 +16,15 @@ router = APIRouter()
 
 @router.post("/media/generate", response_model=JobRead)
 def generate_media(
-    payload: MediaGenerationRequest, db: Session = Depends(get_db), _role: str = Depends(require_owner)
+    payload: MediaGenerationRequest,
+    db: Session = Depends(get_db),
+    _role: str = Depends(require_owner),
 ) -> JobRead:
     workspace = WorkspaceService(get_settings()).get_or_create_primary_workspace(db)
+    if payload.draft_id and get_workspace_draft(
+        db, workspace_id=workspace.id, draft_id=payload.draft_id
+    ) is None:
+        raise HTTPException(status_code=404, detail="Draft not found")
     job = JobService().enqueue_job(
         db,
         workspace_id=workspace.id,

@@ -2,6 +2,9 @@ from dataclasses import dataclass
 
 import httpx
 
+from rebel_forge_backend.core.integrations import META_GRAPH_API_VERSION
+from rebel_forge_backend.providers.publishers.formatting import format_platform_post
+
 
 @dataclass
 class PublishResult:
@@ -9,6 +12,7 @@ class PublishResult:
     platform_post_id: str | None = None
     url: str | None = None
     error: str | None = None
+    ambiguous: bool = False
 
 
 class FacebookPublisher:
@@ -22,7 +26,7 @@ class FacebookPublisher:
         try:
             with httpx.Client(timeout=30.0) as client:
                 r = client.get(
-                    "https://graph.facebook.com/v23.0/me/accounts",
+                    f"https://graph.facebook.com/{META_GRAPH_API_VERSION}/me/accounts",
                     params={"access_token": self.access_token},
                 )
                 if r.status_code == 200:
@@ -31,20 +35,25 @@ class FacebookPublisher:
         except Exception:
             return []
 
-    def publish_text(self, text: str, page_id: str | None = None, page_token: str | None = None) -> PublishResult:
+    def publish_text(
+        self, text: str, page_id: str | None = None, page_token: str | None = None
+    ) -> PublishResult:
         """Publish a text post to a Facebook Page."""
         try:
             # If no page specified, get the first page
             if not page_id or not page_token:
                 pages = self.get_pages()
                 if not pages:
-                    return PublishResult(success=False, error="No Facebook Pages found. Make sure you have a Page linked.")
+                    return PublishResult(
+                        success=False,
+                        error="No Facebook Pages found. Make sure you have a Page linked.",
+                    )
                 page_id = pages[0]["id"]
                 page_token = pages[0]["access_token"]
 
             with httpx.Client(timeout=30.0) as client:
                 r = client.post(
-                    f"https://graph.facebook.com/v23.0/{page_id}/feed",
+                    f"https://graph.facebook.com/{META_GRAPH_API_VERSION}/{page_id}/feed",
                     params={
                         "message": text,
                         "access_token": page_token,
@@ -59,13 +68,13 @@ class FacebookPublisher:
                         url=f"https://www.facebook.com/{post_id}",
                     )
                 else:
-                    return PublishResult(success=False, error=f"Facebook API {r.status_code}: {r.text[:200]}")
+                    return PublishResult(
+                        success=False, error=f"Facebook API {r.status_code}: {r.text[:200]}"
+                    )
 
         except Exception as e:
-            return PublishResult(success=False, error=str(e))
+            return PublishResult(success=False, error=str(e), ambiguous=True)
 
     def format_post(self, caption: str, hashtags: list[str]) -> str:
         """Format caption with hashtags for Facebook."""
-        tags = " ".join(f"#{tag.lstrip('#')}" for tag in hashtags[:10])
-        full = f"{caption}\n\n{tags}" if tags else caption
-        return full[:63206]  # FB's max
+        return format_platform_post("facebook", caption, hashtags)

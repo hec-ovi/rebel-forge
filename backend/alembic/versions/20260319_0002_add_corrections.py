@@ -5,20 +5,21 @@ Revises: 20260317_0001
 Create Date: 2026-03-19
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
 from pgvector.sqlalchemy import Vector
 
+from alembic import op
 
 revision: str = "20260319_0002"
-down_revision: Union[str, None] = "20260317_0001"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "20260317_0001"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    op.execute("CREATE EXTENSION IF NOT EXISTS vector")
     op.create_table(
         "corrections",
         sa.Column("id", sa.UUID(), primary_key=True, server_default=sa.text("gen_random_uuid()")),
@@ -28,7 +29,12 @@ def upgrade() -> None:
         sa.Column("corrected_text", sa.Text(), nullable=False),
         sa.Column("context", sa.JSON(), nullable=True),  # platform, topic, tone, etc.
         sa.Column("embedding", Vector(1024), nullable=True),  # bge-m3 is 1024-dim
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
     )
 
     # Index for similarity search

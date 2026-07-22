@@ -1,8 +1,10 @@
-from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload
 from slugify import slugify
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session, selectinload
 
 from rebel_forge_backend.core.config import Settings
+from rebel_forge_backend.core.style_notes import merge_public_style_notes
 from rebel_forge_backend.db.models import BrandProfile, Workspace
 from rebel_forge_backend.services.events import record_event
 
@@ -12,7 +14,12 @@ class WorkspaceService:
         self.settings = settings
 
     def get_or_create_primary_workspace(self, db: Session) -> Workspace:
-        query = select(Workspace).options(selectinload(Workspace.brand_profile)).limit(1)
+        query = (
+            select(Workspace)
+            .options(selectinload(Workspace.brand_profile))
+            .order_by(Workspace.created_at, Workspace.id)
+            .limit(1)
+        )
         workspace = db.scalars(query).first()
         if workspace:
             return workspace
@@ -41,7 +48,14 @@ class WorkspaceService:
             event_type="workspace.created",
             payload={"name": workspace.name},
         )
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            workspace = db.scalars(query).first()
+            if workspace is not None:
+                return workspace
+            raise
         db.refresh(workspace)
         return db.scalars(query).first()
 
@@ -64,7 +78,7 @@ class WorkspaceService:
         if goals is not None:
             profile.goals = goals
         if style_notes is not None:
-            profile.style_notes = style_notes
+            profile.style_notes = merge_public_style_notes(profile.style_notes, style_notes)
         if reference_examples is not None:
             profile.reference_examples = reference_examples
         record_event(

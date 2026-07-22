@@ -1,11 +1,12 @@
+from datetime import UTC
+
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from rebel_forge_backend.api.auth import require_owner
 from rebel_forge_backend.core.config import get_settings
 from rebel_forge_backend.db.session import get_db
-from rebel_forge_backend.services.heartbeat import HeartbeatService
 from rebel_forge_backend.services.workspace import WorkspaceService
 
 router = APIRouter()
@@ -13,7 +14,7 @@ router = APIRouter()
 
 class HeartbeatConfig(BaseModel):
     enabled: bool = False
-    interval_hours: int = 6
+    interval_hours: int = Field(default=6, ge=1, le=720)
     auto_approve: bool = False
 
 
@@ -27,7 +28,7 @@ def update_heartbeat_config(
     bp = workspace.brand_profile
 
     if bp:
-        style = bp.style_notes or {}
+        style = dict(bp.style_notes or {})
         style["heartbeat"] = {
             "enabled": payload.enabled,
             "interval_hours": payload.interval_hours,
@@ -39,17 +40,15 @@ def update_heartbeat_config(
     return {"status": "saved", "config": payload.model_dump()}
 
 
-@router.post("/heartbeat/trigger")
+@router.post("/heartbeat/trigger", status_code=202)
 def trigger_heartbeat(db: Session = Depends(get_db), _role: str = Depends(require_owner)):
-    """Manually trigger a heartbeat cycle. Queues it for the worker — does NOT block."""
-    from rebel_forge_backend.db.models import Event
+    """Persist a manual heartbeat request for the worker without blocking the API."""
+
     from rebel_forge_backend.services.events import record_event
-    from datetime import datetime, timezone
 
     settings = get_settings()
     workspace = WorkspaceService(settings).get_or_create_primary_workspace(db)
 
-    # Remove the last heartbeat event so should_run() returns True on next worker check
     record_event(
         db,
         workspace_id=workspace.id,
@@ -60,70 +59,56 @@ def trigger_heartbeat(db: Session = Depends(get_db), _role: str = Depends(requir
     )
     db.commit()
 
-    # Run heartbeat directly in background thread instead of waiting for worker
-    import threading
-
-    def _run():
-        from rebel_forge_backend.db.session import SessionLocal
-        from rebel_forge_backend.services.events import record_event
-        try:
-            with SessionLocal() as bg_db:
-                ws = WorkspaceService(get_settings()).get_or_create_primary_workspace(bg_db)
-                hb = HeartbeatService(get_settings())
-                hb.run(bg_db, ws)
-        except Exception as e:
-            import logging
-            logging.getLogger("rebel_forge_backend.heartbeat").error("[heartbeat] Background run failed: %s", e)
-            # Record completion so we don't retry forever
-            try:
-                with SessionLocal() as bg_db:
-                    ws = WorkspaceService(get_settings()).get_or_create_primary_workspace(bg_db)
-                    record_event(bg_db, workspace_id=ws.id, entity_type="workspace",
-                                 entity_id=ws.id, event_type="heartbeat.completed",
-                                 payload={"error": str(e)})
-                    bg_db.commit()
-            except Exception:
-                pass
-
-    threading.Thread(target=_run, daemon=True).start()
-
-    return {"status": "running", "message": "Heartbeat started. Check Tasks page for progress."}
+    return {
+        "status": "queued",
+        "message": "Heartbeat queued for the worker. Check Tasks for progress.",
+    }
 
 
 @router.post("/heartbeat/stop")
-def stop_heartbeat(_role: str = Depends(require_owner)):
-    """Signal the worker to skip the current heartbeat. Also cancels any pending draft generation jobs."""
+def stop_heartbeat(db: Session = Depends(get_db), _role: str = Depends(require_owner)):
+    """Cancel pending draft jobs created by heartbeat; an active cycle cannot be interrupted."""
+    from sqlalchemy import select
+
     from rebel_forge_backend.db.models import Job, JobStatus
-    from rebel_forge_backend.db.session import SessionLocal
 
-    cancelled = 0
-    with SessionLocal() as db:
-        settings = get_settings()
-        workspace = WorkspaceService(settings).get_or_create_primary_workspace(db)
-
-        # Cancel pending jobs
-        from sqlalchemy import select, update
-        result = db.execute(
-            update(Job)
-            .where(Job.workspace_id == workspace.id)
-            .where(Job.status.in_(["pending"]))
-            .values(status="failed", error_message="Cancelled by user")
+    settings = get_settings()
+    workspace = WorkspaceService(settings).get_or_create_primary_workspace(db)
+    pending_jobs = db.scalars(
+        select(Job).where(
+            Job.workspace_id == workspace.id,
+            Job.status == JobStatus.PENDING,
         )
-        cancelled = result.rowcount
-        db.commit()
+    ).all()
+    cancelled = 0
+    for job in pending_jobs:
+        if (job.input_payload or {}).get("source") == "heartbeat":
+            job.status = JobStatus.FAILED
+            job.error_message = "Cancelled by user before heartbeat generation started"
+            cancelled += 1
+    db.commit()
 
-    return {"status": "stopped", "cancelled_jobs": cancelled}
+    return {
+        "status": "pending_heartbeat_jobs_cancelled",
+        "cancelled_jobs": cancelled,
+        "active_cycle_stopped": False,
+    }
 
 
 @router.get("/heartbeat/status")
 def heartbeat_status(db: Session = Depends(get_db), _role: str = Depends(require_owner)):
     """Check when the last heartbeat ran and when the next one is due."""
-    from datetime import datetime, timezone
+    from datetime import datetime
+
     from sqlalchemy import select
+
     from rebel_forge_backend.db.models import Event
 
     settings = get_settings()
     workspace = WorkspaceService(settings).get_or_create_primary_workspace(db)
+    bp = workspace.brand_profile
+    config = (bp.style_notes or {}).get("heartbeat", {}) if bp else {}
+    interval_hours = HeartbeatConfig(**config).interval_hours
 
     last_event = db.scalars(
         select(Event)
@@ -137,15 +122,15 @@ def heartbeat_status(db: Session = Depends(get_db), _role: str = Depends(require
         return {
             "last_run": None,
             "next_run": "now (never run)",
-            "interval_hours": 6,
+            "interval_hours": interval_hours,
         }
 
-    elapsed_hours = (datetime.now(timezone.utc) - last_event.created_at).total_seconds() / 3600
-    remaining = max(0, 6 - elapsed_hours)
+    elapsed_hours = (datetime.now(UTC) - last_event.created_at).total_seconds() / 3600
+    remaining = max(0, interval_hours - elapsed_hours)
 
     return {
         "last_run": last_event.created_at.isoformat(),
         "last_result": last_event.payload,
         "next_run": f"in {remaining:.1f} hours" if remaining > 0 else "now",
-        "interval_hours": 6,
+        "interval_hours": interval_hours,
     }

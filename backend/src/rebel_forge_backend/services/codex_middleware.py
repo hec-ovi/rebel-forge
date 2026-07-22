@@ -5,14 +5,15 @@ From the frontend's perspective, this produces identical SSE events as the vLLM 
 Internally it spawns codex exec, parses tool calls from the response text, executes
 them using the same _execute_tool function, and streams results back.
 """
+
 import json
 import logging
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 
 from sqlalchemy.orm import Session
 
 from rebel_forge_backend.core.config import Settings
-from rebel_forge_backend.services.codex_agent import run_codex
+from rebel_forge_backend.services.codex_agent import ONBOARDING_TOOL_PROMPT, TOOL_PROMPT, run_codex
 
 logger = logging.getLogger("rebel_forge_backend.codex_middleware")
 
@@ -20,13 +21,13 @@ logger = logging.getLogger("rebel_forge_backend.codex_middleware")
 TOOL_TYPE_MAP = {
     "generate_drafts": "generate",
     "web_search": "search",
-    "approve_draft": "approve",
-    "publish_draft": "publish",
     "run_heartbeat": "heartbeat",
     "update_brand": "update_brand",
     "setup_platform": "setup_platform",
     "save_onboarding": "save_onboarding",
     "recall_training": "recall_training",
+    "generate_image": "generate_image",
+    "query_drafts": "query_drafts",
 }
 
 
@@ -39,21 +40,20 @@ async def stream_codex_response(
     settings: Settings,
     db: Session,
     workspace,
-    codex_session_id: str | None = None,
     codex_model: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """
     Run a chat turn through Codex CLI and yield SSE events.
-    Handles tool calls by executing them and optionally resuming the session.
+    Handles tool calls by executing them and starting follow-up turns with their results.
     """
     from rebel_forge_backend.api.routes.chat import _execute_tool
 
     # Run codex
     result = await run_codex(
         prompt=user_message,
-        system_prompt=system_prompt if not codex_session_id else "",
-        session_id=codex_session_id,
+        system_prompt=system_prompt,
         model=codex_model,
+        tool_prompt=ONBOARDING_TOOL_PROMPT if mode == "onboarding" else TOOL_PROMPT,
     )
 
     if result.error:
@@ -79,6 +79,16 @@ async def stream_codex_response(
             tool_summary = current_result.tool_call.get("summary", tool_name)
             tool_args["summary"] = tool_summary
 
+            allowed_tools = {"save_onboarding"} if mode == "onboarding" else set(TOOL_TYPE_MAP)
+            if tool_name not in allowed_tools:
+                tool_result = {
+                    "type": tool_name,
+                    "status": "error",
+                    "message": f"Tool '{tool_name}' is not available in {mode} mode.",
+                }
+                yield f"data: {json.dumps({'tool_result': tool_result})}\n\n"
+                break
+
             logger.info("[codex] round %d: executing tool %s", _round + 1, tool_name)
 
             try:
@@ -97,7 +107,10 @@ async def stream_codex_response(
             if tool_name == "recall_training":
                 ctx = tool_result.get("context", "")
             elif tool_name == "web_search" and tool_result.get("results"):
-                lines = [f"- {r.get('title', '')}: {r.get('description', '')}" for r in tool_result["results"][:5]]
+                lines = [
+                    f"- {r.get('title', '')}: {r.get('description', '')}"
+                    for r in tool_result["results"][:5]
+                ]
                 ctx = "Search results:\n" + "\n".join(lines)
             elif tool_name == "query_drafts" and tool_result.get("results"):
                 ctx = json.dumps(tool_result["results"][:10])
@@ -106,13 +119,22 @@ async def stream_codex_response(
 
             accumulated_context += f"\n\n[{tool_name} result]:\n{ctx}"
 
-            followup_prompt = f"{user_message}{accumulated_context}\n\nContinue with the user's request. If there are more platforms or tasks remaining, call the next tool. If everything is done, respond with a short summary."
+            if _round == max_rounds - 1:
+                final_text = (
+                    "Tool execution limit reached. Review the completed actions, then send another "
+                    "message if more work is needed."
+                )
+                yield f"data: {json.dumps({'content': final_text})}\n\n"
+                break
+
+            followup_prompt = f"{user_message}{accumulated_context}\n\nContinue with the user's request. If there are more platforms or tasks remaining, call the next tool. If everything is done, summarize the completed work."
 
             logger.info("[codex] agentic loop round %d: follow-up after %s", _round + 1, tool_name)
             current_result = await run_codex(
                 prompt=followup_prompt,
                 system_prompt=system_prompt,
                 model=codex_model,
+                tool_prompt=ONBOARDING_TOOL_PROMPT if mode == "onboarding" else TOOL_PROMPT,
             )
             if current_result.error:
                 yield f"data: {json.dumps({'content': f'Follow-up error: {current_result.error}'})}\n\n"
@@ -129,34 +151,64 @@ async def stream_codex_response(
     tool_names_str = ", ".join(all_tool_names) if all_tool_names else None
     # Save all tool results as array if multi-tool, single dict if one tool
     save_data = all_tool_results if len(all_tool_results) > 1 else last_tool_result
-    _save_conversation(db, workspace, mode, last_user_message or user_message, final_text or "(empty)", tool_names_str, result.usage, tool_result_data=save_data)
+    _save_conversation(
+        db,
+        workspace,
+        mode,
+        last_user_message or user_message,
+        final_text or "(empty)",
+        tool_names_str,
+        result.usage,
+        tool_result_data=save_data,
+    )
 
     # Include response metadata
-    yield f"data: {json.dumps({'meta': {'provider': 'codex', 'thread_id': result.thread_id, 'usage': result.usage}})}\n\n"
+    yield f"data: {json.dumps({'meta': {'provider': 'codex', 'usage': result.usage}})}\n\n"
     yield "data: [DONE]\n\n"
 
 
-def _save_conversation(db: Session, workspace, mode: str, user_msg: str, assistant_msg: str, tool_name: str | None, usage: dict, tool_result_data: dict | None = None):
+def _save_conversation(
+    db: Session,
+    workspace,
+    mode: str,
+    user_msg: str,
+    assistant_msg: str,
+    tool_name: str | None,
+    usage: dict,
+    tool_result_data: dict | None = None,
+):
     """Save the conversation turn to the database."""
     try:
         from sqlalchemy import text as sql_text
 
         # Save user message
-        db.execute(sql_text(
-            "INSERT INTO conversations (workspace_id, mode, role, content, created_at) VALUES (:wid, :mode, 'user', :content, clock_timestamp())"
-        ), {"wid": str(workspace.id), "mode": mode, "content": user_msg})
+        db.execute(
+            sql_text(
+                "INSERT INTO conversations (workspace_id, mode, role, content, created_at) VALUES (:wid, :mode, 'user', :content, clock_timestamp())"
+            ),
+            {"wid": str(workspace.id), "mode": mode, "content": user_msg},
+        )
 
         # Save assistant response
-        db.execute(sql_text(
-            "INSERT INTO conversations (workspace_id, mode, role, content, tool_name, tool_result, response_meta, created_at) VALUES (:wid, :mode, 'assistant', :content, :tool, :tool_result, :meta, clock_timestamp())"
-        ), {
-            "wid": str(workspace.id),
-            "mode": mode,
-            "content": assistant_msg or "(empty)",
-            "tool": tool_name,
-            "tool_result": json.dumps(tool_result_data) if tool_result_data else None,
-            "meta": json.dumps({"usage": usage, "provider": "codex", "tool_names": [tool_name] if tool_name else []}),
-        })
+        db.execute(
+            sql_text(
+                "INSERT INTO conversations (workspace_id, mode, role, content, tool_name, tool_result, response_meta, created_at) VALUES (:wid, :mode, 'assistant', :content, :tool, :tool_result, :meta, clock_timestamp())"
+            ),
+            {
+                "wid": str(workspace.id),
+                "mode": mode,
+                "content": assistant_msg or "(empty)",
+                "tool": tool_name,
+                "tool_result": json.dumps(tool_result_data) if tool_result_data else None,
+                "meta": json.dumps(
+                    {
+                        "usage": usage,
+                        "provider": "codex",
+                        "tool_names": [tool_name] if tool_name else [],
+                    }
+                ),
+            },
+        )
         db.commit()
     except Exception as e:
         logger.warning("[codex] Failed to save conversation: %s", e)

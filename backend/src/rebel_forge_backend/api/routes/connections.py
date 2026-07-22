@@ -3,21 +3,29 @@ Connections management — read and update platform API credentials.
 Reads from .env file, writes back to .env file.
 No database needed — .env is the source of truth for credentials.
 """
+
 import logging
-from functools import lru_cache
+import os
+import re
+import tempfile
+import threading
 from pathlib import Path
 
+from dotenv import dotenv_values
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from rebel_forge_backend.api.auth import require_owner
 from rebel_forge_backend.core.config import get_settings
+from rebel_forge_backend.core.env_values import decode_env_value, encode_env_value
+from rebel_forge_backend.core.integrations import META_GRAPH_API_VERSION, X_API_BASE
 
 logger = logging.getLogger("rebel_forge_backend.connections")
 
 router = APIRouter()
 
 ENV_PATH = Path(__file__).resolve().parents[4] / ".env"
+_ENV_WRITE_LOCK = threading.Lock()
 
 # Map: platform_id → list of (field_name, env_var_name)
 PLATFORM_ENV_MAP = {
@@ -44,24 +52,8 @@ PLATFORM_ENV_MAP = {
         ("access_token", "THREADS_ACCESS_TOKEN"),
         ("user_id", "THREADS_USER_ID"),
     ],
-    "tiktok": [
-        ("access_token", "TIKTOK_ACCESS_TOKEN"),
-    ],
-    "youtube": [
-        ("api_key", "YOUTUBE_API_KEY"),
-        ("channel_id", "YOUTUBE_CHANNEL_ID"),
-    ],
-    "pinterest": [
-        ("access_token", "PINTEREST_ACCESS_TOKEN"),
-    ],
     "openai": [
         ("api_key", "OPENAI_API_KEY"),
-    ],
-    "anthropic": [
-        ("api_key", "ANTHROPIC_API_KEY"),
-    ],
-    "gemini": [
-        ("api_key", "GEMINI_API_KEY"),
     ],
     "grok": [
         ("api_key", "GROK_API_KEY"),
@@ -94,39 +86,84 @@ PLATFORM_ENV_MAP = {
     ],
 }
 
+REQUIRED_CONNECTION_FIELDS = {
+    "x": {"consumer_key", "consumer_secret", "access_token", "access_token_secret"},
+    "linkedin": {"access_token"},
+    "facebook": {"access_token"},
+    "instagram": {"access_token", "user_id"},
+    "threads": {"access_token", "user_id"},
+    "openai": {"api_key"},
+    "grok": {"api_key"},
+    "openrouter": {"api_key"},
+    "vllm": {"base_url", "model"},
+    "firecrawl": {"api_key"},
+    "cloudflare_r2": {
+        "endpoint_url",
+        "access_key_id",
+        "secret_access_key",
+        "bucket_name",
+        "public_url",
+    },
+    "comfyui": {"base_url"},
+    "fal_ai": {"api_key", "model"},
+}
+
+
+def _is_real_value(value: str) -> bool:
+    return bool(value) and not value.startswith("your-")
+
+
+def _is_configured(platform_id: str, values: dict[str, str], env: dict[str, str]) -> bool:
+    required = REQUIRED_CONNECTION_FIELDS[platform_id]
+    if platform_id in {"vllm", "comfyui"}:
+        persisted_fields = {
+            field
+            for field, env_var in PLATFORM_ENV_MAP[platform_id]
+            if _is_real_value(env.get(env_var, ""))
+        }
+        if not required.issubset(persisted_fields):
+            return False
+    return all(_is_real_value(values.get(field, "")) for field in required)
+
 
 def _read_env() -> dict[str, str]:
     """Read all key=value pairs from .env file."""
-    env = {}
-    if ENV_PATH.exists():
-        for line in ENV_PATH.read_text().splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" in line:
-                key, _, value = line.partition("=")
-                env[key.strip()] = value.strip()
-    return env
+    if not ENV_PATH.exists():
+        return {}
+    parsed = dotenv_values(ENV_PATH, interpolate=False)
+    return {
+        key: decode_env_value(value or "")
+        for key, value in parsed.items()
+        if key is not None
+    }
 
 
 def _write_env(env: dict[str, str]) -> None:
     """Write key=value pairs back to .env file, preserving comments and order."""
     if not ENV_PATH.exists():
-        return
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Credential persistence is unavailable because {ENV_PATH} does not exist. "
+                "Create or mount a writable backend .env file, then restart the API and worker."
+            ),
+        )
 
-    lines = ENV_PATH.read_text().splitlines()
+    lines = ENV_PATH.read_text(encoding="utf-8").splitlines()
     new_lines = []
     written_keys = set()
+    assignment = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=")
 
     for line in lines:
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             new_lines.append(line)
             continue
-        if "=" in stripped:
-            key = stripped.split("=", 1)[0].strip()
+        match = assignment.match(line)
+        if match:
+            key = match.group(1)
             if key in env:
-                new_lines.append(f"{key}={env[key]}")
+                new_lines.append(f"{key}={encode_env_value(env[key])}")
                 written_keys.add(key)
             else:
                 new_lines.append(line)
@@ -136,9 +173,32 @@ def _write_env(env: dict[str, str]) -> None:
     # Append any new keys not already in the file
     for key, value in env.items():
         if key not in written_keys:
-            new_lines.append(f"{key}={value}")
+            new_lines.append(f"{key}={encode_env_value(value)}")
 
-    ENV_PATH.write_text("\n".join(new_lines) + "\n")
+    temp_path: Path | None = None
+    try:
+        with _ENV_WRITE_LOCK:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=ENV_PATH.parent,
+                prefix=f".{ENV_PATH.name}.",
+                delete=False,
+            ) as temporary:
+                temp_path = Path(temporary.name)
+                os.fchmod(temporary.fileno(), 0o600)
+                temporary.write("\n".join(new_lines) + "\n")
+                temporary.flush()
+                os.fsync(temporary.fileno())
+            os.replace(temp_path, ENV_PATH)
+            temp_path = None
+    except OSError as exc:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=503,
+            detail=f"Credential persistence failed for {ENV_PATH}: {exc}",
+        ) from exc
 
 
 def _mask(value: str) -> str:
@@ -150,8 +210,24 @@ def _mask(value: str) -> str:
     return "****" + value[-4:]
 
 
+def _configured_value(env: dict[str, str], env_var: str, settings) -> str:
+    """Read a persisted value, falling back to the process configuration."""
+    return env.get(env_var, "") or str(getattr(settings, env_var.lower(), ""))
+
+
 # Fields that are not secrets — show full value
-_NON_SECRET_FIELDS = {"base_url", "model", "api_url", "base_url"}
+_NON_SECRET_FIELDS = {
+    "api_url",
+    "base_url",
+    "bucket_name",
+    "channel_id",
+    "endpoint_url",
+    "model",
+    "page_id",
+    "person_id",
+    "public_url",
+    "user_id",
+}
 
 
 class ConnectionResponse(BaseModel):
@@ -159,10 +235,19 @@ class ConnectionResponse(BaseModel):
     connected: bool
     credentials: dict[str, str]  # masked values
     fields: list[str]
+    recreate_required: bool = False
 
 
 class ConnectionUpdate(BaseModel):
     credentials: dict[str, str]
+
+    @field_validator("credentials")
+    @classmethod
+    def reject_env_line_injection(cls, credentials: dict[str, str]) -> dict[str, str]:
+        for value in credentials.values():
+            if any(character in value for character in ("\r", "\n", "\0")):
+                raise ValueError("Credential values cannot contain line breaks or NUL bytes")
+        return credentials
 
 
 @router.get("/connections")
@@ -170,33 +255,27 @@ def list_connections(_role: str = Depends(require_owner)):
     """List all platforms with connection status."""
     env = _read_env()
     settings = get_settings()
-    env_to_attr = {
-        "COMFYUI_BASE_URL": "comfyui_base_url",
-        "LLM_BASE_URL": "llm_base_url", "LLM_MODEL": "llm_model", "LLM_API_KEY": "llm_api_key",
-        "FAL_KEY": "fal_key", "FAL_MODEL": "fal_model",
-        "FIRECRAWL_API_KEY": "firecrawl_api_key", "FIRECRAWL_API_URL": "firecrawl_api_url",
-    }
     result = []
 
     for platform_id, field_map in PLATFORM_ENV_MAP.items():
         creds = {}
-        has_any = False
+        values = {}
         for field_name, env_var in field_map:
-            value = env.get(env_var, "")
-            if not value and env_var in env_to_attr:
-                value = str(getattr(settings, env_to_attr[env_var], ""))
-            if value and not value.startswith("your-"):
-                has_any = True
+            value = _configured_value(env, env_var, settings)
+            values[field_name] = value
+            if _is_real_value(value):
                 creds[field_name] = value if field_name in _NON_SECRET_FIELDS else _mask(value)
             else:
                 creds[field_name] = ""
 
-        result.append({
-            "platform": platform_id,
-            "connected": has_any,
-            "credentials": creds,
-            "fields": [f[0] for f in field_map],
-        })
+        result.append(
+            {
+                "platform": platform_id,
+                "connected": _is_configured(platform_id, values, env),
+                "credentials": creds,
+                "fields": [f[0] for f in field_map],
+            }
+        )
 
     return result
 
@@ -211,43 +290,41 @@ def get_connection(platform_id: str, _role: str = Depends(require_owner)):
     settings = get_settings()
     field_map = PLATFORM_ENV_MAP[platform_id]
 
-    # Map env var names to Settings attribute names for fallback
-    env_to_attr = {
-        "COMFYUI_BASE_URL": "comfyui_base_url",
-        "LLM_BASE_URL": "llm_base_url", "LLM_MODEL": "llm_model", "LLM_API_KEY": "llm_api_key",
-        "FAL_KEY": "fal_key", "FAL_MODEL": "fal_model",
-        "FIRECRAWL_API_KEY": "firecrawl_api_key", "FIRECRAWL_API_URL": "firecrawl_api_url",
-    }
-
     creds = {}
-    has_any = False
+    values = {}
     for field_name, env_var in field_map:
-        value = env.get(env_var, "")
-        # Fall back to Settings default if .env doesn't have it
-        if not value and env_var in env_to_attr:
-            value = str(getattr(settings, env_to_attr[env_var], ""))
-        if value and not value.startswith("your-"):
-            has_any = True
+        value = _configured_value(env, env_var, settings)
+        values[field_name] = value
+        if _is_real_value(value):
             creds[field_name] = value if field_name in _NON_SECRET_FIELDS else _mask(value)
         else:
             creds[field_name] = ""
 
     return ConnectionResponse(
         platform=platform_id,
-        connected=has_any,
+        connected=_is_configured(platform_id, values, env),
         credentials=creds,
         fields=[f[0] for f in field_map],
     )
 
 
 @router.put("/connections/{platform_id}", response_model=ConnectionResponse)
-def update_connection(platform_id: str, payload: ConnectionUpdate, _role: str = Depends(require_owner)):
-    """Update credentials for a platform. Writes to .env file."""
+def update_connection(
+    platform_id: str, payload: ConnectionUpdate, _role: str = Depends(require_owner)
+):
+    """Update credentials for a platform in a writable backend .env file."""
     if platform_id not in PLATFORM_ENV_MAP:
         raise HTTPException(status_code=404, detail=f"Unknown platform: {platform_id}")
 
     env = _read_env()
     field_map = PLATFORM_ENV_MAP[platform_id]
+    allowed_fields = {field_name for field_name, _ in field_map}
+    unknown_fields = set(payload.credentials) - allowed_fields
+    if unknown_fields:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown credential fields: {', '.join(sorted(unknown_fields))}",
+        )
 
     # Update env values
     for field_name, env_var in field_map:
@@ -258,26 +335,28 @@ def update_connection(platform_id: str, payload: ConnectionUpdate, _role: str = 
 
     # Clear cached settings so new values are picked up
     from rebel_forge_backend.core.config import get_settings
+
     get_settings.cache_clear()
 
     logger.info("[connections] Updated credentials for %s", platform_id)
 
     # Return masked values
     creds = {}
-    has_any = False
+    values = {}
     for field_name, env_var in field_map:
         value = env.get(env_var, "")
-        if value and not value.startswith("your-"):
-            has_any = True
-            creds[field_name] = _mask(value)
+        values[field_name] = value
+        if _is_real_value(value):
+            creds[field_name] = value if field_name in _NON_SECRET_FIELDS else _mask(value)
         else:
             creds[field_name] = ""
 
     return ConnectionResponse(
         platform=platform_id,
-        connected=has_any,
+        connected=_is_configured(platform_id, values, env),
         credentials=creds,
         fields=[f[0] for f in field_map],
+        recreate_required=True,
     )
 
 
@@ -292,31 +371,49 @@ def test_connection(platform_id: str, _role: str = Depends(require_owner)):
         return {"status": "error", "error": f"Unknown platform: {platform_id}"}
 
     # Get values
-    values = {f: env.get(e, "") for f, e in field_map}
+    settings = get_settings()
+    values = {field: _configured_value(env, env_var, settings) for field, env_var in field_map}
 
     try:
         if platform_id == "x":
             import requests
             from requests_oauthlib import OAuth1
-            auth = OAuth1(values.get("consumer_key", ""), values.get("consumer_secret", ""),
-                          values.get("access_token", ""), values.get("access_token_secret", ""))
-            r = requests.get("https://api.twitter.com/2/users/me", auth=auth, timeout=10)
+
+            auth = OAuth1(
+                values.get("consumer_key", ""),
+                values.get("consumer_secret", ""),
+                values.get("access_token", ""),
+                values.get("access_token_secret", ""),
+            )
+            r = requests.get(f"{X_API_BASE}/users/me", auth=auth, timeout=10)
             if r.status_code == 200:
                 user = r.json().get("data", {})
-                return {"status": "ok", "profile": {"username": user.get("username"), "name": user.get("name")}}
+                return {
+                    "status": "ok",
+                    "profile": {"username": user.get("username"), "name": user.get("name")},
+                }
             return {"status": "error", "error": f"HTTP {r.status_code}: {r.text[:100]}"}
 
         elif platform_id == "linkedin":
-            r = httpx.get("https://api.linkedin.com/v2/userinfo",
-                          headers={"Authorization": f"Bearer {values.get('access_token', '')}"}, timeout=10.0)
+            r = httpx.get(
+                "https://api.linkedin.com/v2/userinfo",
+                headers={"Authorization": f"Bearer {values.get('access_token', '')}"},
+                timeout=10.0,
+            )
             if r.status_code == 200:
                 data = r.json()
-                return {"status": "ok", "profile": {"name": data.get("name"), "sub": data.get("sub")}}
+                return {
+                    "status": "ok",
+                    "profile": {"name": data.get("name"), "sub": data.get("sub")},
+                }
             return {"status": "error", "error": f"HTTP {r.status_code}"}
 
         elif platform_id == "facebook":
-            r = httpx.get("https://graph.facebook.com/v23.0/me/accounts",
-                          params={"access_token": values.get("access_token", "")}, timeout=10.0)
+            r = httpx.get(
+                f"https://graph.facebook.com/{META_GRAPH_API_VERSION}/me/accounts",
+                params={"access_token": values.get("access_token", "")},
+                timeout=10.0,
+            )
             if r.status_code == 200:
                 pages = r.json().get("data", [])
                 return {"status": "ok", "profile": {"pages": [p.get("name") for p in pages]}}
@@ -324,15 +421,21 @@ def test_connection(platform_id: str, _role: str = Depends(require_owner)):
 
         elif platform_id == "instagram":
             uid = values.get("user_id", "")
-            r = httpx.get(f"https://graph.instagram.com/v23.0/{uid}",
-                          params={"fields": "id,username", "access_token": values.get("access_token", "")}, timeout=10.0)
+            r = httpx.get(
+                f"https://graph.instagram.com/{META_GRAPH_API_VERSION}/{uid}",
+                params={"fields": "id,username", "access_token": values.get("access_token", "")},
+                timeout=10.0,
+            )
             if r.status_code == 200:
                 return {"status": "ok", "profile": {"username": r.json().get("username")}}
             return {"status": "error", "error": f"HTTP {r.status_code}: {r.text[:100]}"}
 
         elif platform_id == "threads":
-            r = httpx.get("https://graph.threads.net/v1.0/me",
-                          params={"fields": "id,username", "access_token": values.get("access_token", "")}, timeout=10.0)
+            r = httpx.get(
+                f"https://graph.threads.net/{META_GRAPH_API_VERSION}/me",
+                params={"fields": "id,username", "access_token": values.get("access_token", "")},
+                timeout=10.0,
+            )
             if r.status_code == 200:
                 return {"status": "ok", "profile": {"username": r.json().get("username")}}
             return {"status": "error", "error": f"HTTP {r.status_code}: {r.text[:100]}"}
@@ -351,10 +454,14 @@ def test_connection(platform_id: str, _role: str = Depends(require_owner)):
         elif platform_id == "comfyui":
             base_url = values.get("base_url", "http://127.0.0.1:8188")
             r = httpx.get(f"{base_url}/", timeout=5.0)
-            return {"status": "ok" if r.status_code == 200 else "error", "profile": {"reachable": r.status_code == 200}}
+            return {
+                "status": "ok" if r.status_code == 200 else "error",
+                "profile": {"reachable": r.status_code == 200},
+            }
 
         elif platform_id == "firecrawl":
             from rebel_forge_backend.providers.search.firecrawl import FirecrawlProvider
+
             settings = get_settings()
             fc = FirecrawlProvider(settings)
             results = fc.search("test", limit=1)
@@ -362,9 +469,10 @@ def test_connection(platform_id: str, _role: str = Depends(require_owner)):
 
         elif platform_id == "cloudflare_r2":
             from rebel_forge_backend.services.cloud_storage import CloudStorage
+
             settings = get_settings()
             cloud = CloudStorage(settings)
-            url = cloud.upload_bytes(b"test", "connection_test.txt", "text/plain")
+            cloud.upload_bytes(b"test", "connection_test.txt", "text/plain")
             cloud.delete("connection_test.txt")
             return {"status": "ok", "profile": {"upload_works": True}}
 
@@ -389,15 +497,30 @@ def test_connection(platform_id: str, _role: str = Depends(require_owner)):
             if r.status_code == 200:
                 data = r.json()
                 images = data.get("images", [])
-                return {"status": "ok", "profile": {"model": model, "image_url": images[0]["url"] if images else None}}
+                return {
+                    "status": "ok",
+                    "profile": {"model": model, "image_url": images[0]["url"] if images else None},
+                }
             return {"status": "error", "error": f"HTTP {r.status_code}: {r.text[:150]}"}
 
-        elif platform_id in ("openai", "anthropic", "gemini", "grok"):
+        elif platform_id in ("openai", "grok", "openrouter"):
             api_key = values.get("api_key", "")
             if not api_key:
                 return {"status": "error", "error": "No API key configured"}
-            # Just check key format
-            return {"status": "ok", "profile": {"key_set": True, "key_preview": _mask(api_key)}}
+            provider_urls = {
+                "openai": "https://api.openai.com/v1",
+                "grok": "https://api.x.ai/v1",
+                "openrouter": "https://openrouter.ai/api/v1",
+            }
+            r = httpx.get(
+                f"{provider_urls[platform_id]}/models",
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=10.0,
+            )
+            if r.status_code == 200:
+                models = [item.get("id") for item in r.json().get("data", [])[:5]]
+                return {"status": "ok", "profile": {"models": models}}
+            return {"status": "error", "error": f"HTTP {r.status_code}: {r.text[:100]}"}
 
         else:
             return {"status": "error", "error": "Test not implemented for this platform"}
@@ -415,12 +538,13 @@ def delete_connection(platform_id: str, _role: str = Depends(require_owner)):
     env = _read_env()
     field_map = PLATFORM_ENV_MAP[platform_id]
 
-    for field_name, env_var in field_map:
+    for _field_name, env_var in field_map:
         env[env_var] = ""
 
     _write_env(env)
 
     from rebel_forge_backend.core.config import get_settings
+
     get_settings.cache_clear()
 
     logger.info("[connections] Cleared credentials for %s", platform_id)

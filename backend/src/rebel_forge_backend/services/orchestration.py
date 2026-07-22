@@ -1,22 +1,33 @@
 import logging
+from pathlib import Path
 
 from sqlalchemy.orm import Session
 
 from rebel_forge_backend.core.config import Settings
-
-logger = logging.getLogger("rebel_forge_backend.orchestration")
-from rebel_forge_backend.db.models import Asset, AssetStatus, ContentDraft, DraftStatus, Job, JobType, Workspace
+from rebel_forge_backend.core.style_notes import public_style_notes
+from rebel_forge_backend.db.models import (
+    Asset,
+    AssetStatus,
+    ContentDraft,
+    DraftStatus,
+    Job,
+    JobType,
+    Workspace,
+)
 from rebel_forge_backend.providers.registry import build_llm_provider, build_media_provider
 from rebel_forge_backend.schemas.drafts import DraftGenerationRequest, DraftPackageItem
 from rebel_forge_backend.schemas.media import MediaGenerationRequest
 from rebel_forge_backend.services.events import record_event
 from rebel_forge_backend.services.storage import LocalAssetStorage
 
+logger = logging.getLogger("rebel_forge_backend.orchestration")
+
 
 def _detect_media_provider(settings) -> str | None:
     """Detect available media provider: comfyui > fal_ai > None."""
     try:
         import httpx as _hx
+
         _r = _hx.get(f"{settings.comfyui_base_url}/", timeout=3.0)
         if _r.status_code == 200:
             return "comfyui"
@@ -35,8 +46,14 @@ class JobOrchestrator:
         if db:
             try:
                 from rebel_forge_backend.services.llm_config import get_active_llm
+
                 llm = get_active_llm(db, settings)
-                llm_overrides = {"base_url": llm.base_url, "api_key": llm.api_key, "model": llm.model, "provider": llm.provider}
+                llm_overrides = {
+                    "base_url": llm.base_url,
+                    "api_key": llm.api_key,
+                    "model": llm.model,
+                    "provider": llm.provider,
+                }
             except Exception:
                 pass
         self.llm_provider = build_llm_provider(settings, **llm_overrides)
@@ -58,8 +75,11 @@ class JobOrchestrator:
 
         # Build unified context for draft generation — filtered to target platform
         from rebel_forge_backend.services.context_builder import build_context, get_mode_description
+
         unified_context = build_context(
-            db=db, settings=self.settings, mode="draft_generation",
+            db=db,
+            settings=self.settings,
+            mode="draft_generation",
             mode_description=get_mode_description("draft_generation"),
             platform=request.platform,
         )
@@ -69,12 +89,16 @@ class JobOrchestrator:
             voice_summary=workspace.brand_profile.voice_summary,
             audience_summary=workspace.brand_profile.audience_summary,
             goals=workspace.brand_profile.goals,
-            style_notes=workspace.brand_profile.style_notes,
+            style_notes=public_style_notes(workspace.brand_profile.style_notes),
             reference_examples=workspace.brand_profile.reference_examples,
             request=request,
             corrections=unified_context,
         )
         submission = self.llm_provider.generate_draft_package(prompt=prompt, count=request.count)
+        if len(submission.drafts) != request.count:
+            raise ValueError(
+                f"LLM returned {len(submission.drafts)} drafts, but exactly {request.count} were requested."
+            )
 
         draft_ids: list[str] = []
         media_job_ids: list[str] = []
@@ -94,10 +118,14 @@ class JobOrchestrator:
             gen_img = job.input_payload.get("generate_image")
             should_gen_image = gen_img if gen_img is not None else bool(draft_record.media_prompt)
             if should_gen_image:
-                img_prompt = draft_record.media_prompt or f"Social media image for: {draft_record.concept[:200]}"
+                img_prompt = (
+                    draft_record.media_prompt
+                    or f"Social media image for: {draft_record.concept[:200]}"
+                )
                 media_provider = _detect_media_provider(self.settings)
                 if media_provider:
                     from rebel_forge_backend.services.jobs import JobService as _JS
+
                     media_job = _JS().enqueue_job(
                         db,
                         workspace_id=job.workspace_id,
@@ -108,70 +136,56 @@ class JobOrchestrator:
                             "draft_id": str(draft_record.id),
                             "provider": media_provider,
                         },
+                        commit=False,
                     )
                     media_job_ids.append(str(media_job.id))
 
-        # Auto-approve if requested
-        auto_approve = request.auto_approve or request.auto_publish
-        auto_publish = request.auto_publish
+        # Heartbeat may opt into review-free approval, but publication always goes
+        # through the explicit, idempotent Drafts API after a human action.
+        auto_approve = request.auto_approve
         approved_ids: list[str] = []
-        published_ids: list[str] = []
-        publish_errors: list[dict] = []
 
         if auto_approve:
             for did in draft_ids:
                 from uuid import UUID as _UUID
+
                 draft_obj = db.get(ContentDraft, _UUID(did))
                 if draft_obj and draft_obj.status == DraftStatus.DRAFT:
                     draft_obj.status = DraftStatus.APPROVED
                     db.flush()
                     approved_ids.append(did)
-                    record_event(db, workspace_id=job.workspace_id, entity_type="content_draft", entity_id=draft_obj.id, event_type="draft.approved", payload={"auto": True})
-
-        if auto_publish:
-            for did in approved_ids:
-                from uuid import UUID as _UUID
-                draft_obj = db.get(ContentDraft, _UUID(did))
-                if not draft_obj:
-                    continue
-                # Skip Instagram auto-publish — image generation is async and may not be ready yet
-                if draft_obj.platform.lower() == "instagram":
-                    publish_errors.append({"draft_id": did, "error": "Instagram auto-publish skipped — image may still be generating. Publish manually after image is ready."})
-                    continue
-                try:
-                    from rebel_forge_backend.api.routes.publish import PUBLISHERS
-                    publish_fn = PUBLISHERS.get(draft_obj.platform.lower())
-                    if publish_fn:
-                        pub_result = publish_fn(draft_obj, self.settings, db)
-                        if pub_result.success:
-                            draft_obj.status = DraftStatus.PUBLISHED
-                            db.flush()
-                            published_ids.append(did)
-                            record_event(db, workspace_id=job.workspace_id, entity_type="content_draft", entity_id=draft_obj.id, event_type="draft.published", payload={"auto": True, "url": pub_result.url})
-                        else:
-                            publish_errors.append({"draft_id": did, "error": pub_result.error})
-                    else:
-                        publish_errors.append({"draft_id": did, "error": f"No publisher for {draft_obj.platform}"})
-                except Exception as e:
-                    publish_errors.append({"draft_id": did, "error": str(e)})
+                    record_event(
+                        db,
+                        workspace_id=job.workspace_id,
+                        entity_type="content_draft",
+                        entity_id=draft_obj.id,
+                        event_type="draft.approved",
+                        payload={"auto": True},
+                    )
 
         return {
             "draft_ids": draft_ids,
             "media_job_ids": media_job_ids,
             "count": len(draft_ids),
             "approved_ids": approved_ids,
-            "published_ids": published_ids,
-            "publish_errors": publish_errors,
         }
 
     def _process_media_generation(self, db: Session, job: Job) -> dict:
         request = MediaGenerationRequest.model_validate(job.input_payload)
+        if request.draft_id:
+            from rebel_forge_backend.services.draft_query import get_workspace_draft
+
+            if get_workspace_draft(
+                db, workspace_id=job.workspace_id, draft_id=request.draft_id
+            ) is None:
+                raise ValueError("Draft not found in the job workspace")
         provider = job.input_payload.get("provider", "")
 
         # Use ComfyUI if specified
         if provider == "comfyui":
             from rebel_forge_backend.providers.media.comfyui import ComfyUIProvider
-            comfy = ComfyUIProvider()
+
+            comfy = ComfyUIProvider(self.settings)
             result = comfy.generate_image(prompt=request.prompt)
 
             if not result.success:
@@ -179,12 +193,15 @@ class JobOrchestrator:
 
             # Upload to R2 for public access (needed for Instagram)
             public_url = result.image_url  # fallback to local ComfyUI URL
+            r2_object_key = None
             try:
                 from rebel_forge_backend.services.cloud_storage import CloudStorage
+
                 if self.settings.r2_endpoint_url and self.settings.r2_public_url:
                     cloud = CloudStorage(self.settings)
-                    filename = result.local_path or f"{job.id}.png"
+                    filename = Path(result.local_path).name if result.local_path else f"{job.id}.png"
                     public_url = cloud.upload_image_from_url(result.image_url, filename)
+                    r2_object_key = cloud.object_key_for_filename(filename)
                     logger.info("[media] Uploaded to R2: %s", public_url)
             except Exception as e:
                 logger.warning("[media] R2 upload failed, using local URL: %s", e)
@@ -198,7 +215,12 @@ class JobOrchestrator:
                 prompt=request.prompt,
                 external_url=public_url,
                 public_url=public_url,
-                metadata_json={"local_path": result.local_path, "comfyui_url": result.image_url, "r2_url": public_url},
+                metadata_json={
+                    "local_path": result.local_path,
+                    "comfyui_url": result.image_url,
+                    "r2_url": public_url,
+                    "r2_object_key": r2_object_key,
+                },
             )
             db.add(asset)
             db.flush()
@@ -209,7 +231,10 @@ class JobOrchestrator:
                 entity_type="asset",
                 entity_id=asset.id,
                 event_type="asset.generated",
-                payload={"draft_id": str(request.draft_id) if request.draft_id else None, "provider": "comfyui"},
+                payload={
+                    "draft_id": str(request.draft_id) if request.draft_id else None,
+                    "provider": "comfyui",
+                },
             )
             return {
                 "asset_id": str(asset.id),
@@ -219,6 +244,7 @@ class JobOrchestrator:
         # fal.ai provider
         if provider == "fal_ai":
             from rebel_forge_backend.providers.media.fal_ai import FalAIProvider
+
             fal = FalAIProvider(self.settings)
             result = fal.generate_image(prompt=request.prompt, size=request.size)
 
@@ -231,7 +257,12 @@ class JobOrchestrator:
                 prompt=request.prompt,
                 external_url=result.image_url,
                 public_url=result.image_url,
-                metadata_json={"fal_url": result.image_url, "width": result.width, "height": result.height, "model": self.settings.fal_model},
+                metadata_json={
+                    "fal_url": result.image_url,
+                    "width": result.width,
+                    "height": result.height,
+                    "model": self.settings.fal_model,
+                },
             )
             db.add(asset)
             db.flush()
@@ -242,7 +273,10 @@ class JobOrchestrator:
                 entity_type="asset",
                 entity_id=asset.id,
                 event_type="asset.generated",
-                payload={"draft_id": str(request.draft_id) if request.draft_id else None, "provider": "fal_ai"},
+                payload={
+                    "draft_id": str(request.draft_id) if request.draft_id else None,
+                    "provider": "fal_ai",
+                },
             )
             return {"asset_id": str(asset.id), "image_url": result.image_url}
 
@@ -264,6 +298,7 @@ class JobOrchestrator:
             stored = self.asset_storage.store_png_base64(
                 workspace_id=job.workspace_id, image_b64=generated.b64_json
             )
+            self.asset_storage.track_until_commit(db, stored.storage_path)
             asset.storage_path = stored.storage_path
             asset.public_url = stored.public_url
             asset.status = AssetStatus.READY
@@ -298,7 +333,7 @@ class JobOrchestrator:
         record = ContentDraft(
             workspace_id=job.workspace_id,
             job_id=job.id,
-            platform=draft.platform,
+            platform=request.platform,
             concept=draft.concept,
             brief=request.brief,
             caption=draft.caption,
@@ -371,4 +406,3 @@ Each draft should include:
 
 {corrections}
 """.strip()
-

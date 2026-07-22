@@ -8,7 +8,9 @@ from rebel_forge_backend.schemas.drafts import DraftPackageSubmission
 
 
 class OpenAIResponsesProvider:
-    def __init__(self, settings: Settings, *, base_url: str = "", api_key: str = "", model: str = "") -> None:
+    def __init__(
+        self, settings: Settings, *, base_url: str = "", api_key: str = "", model: str = ""
+    ) -> None:
         self.settings = settings
         # Allow runtime overrides (from DB provider config)
         self._base_url = base_url or settings.llm_base_url
@@ -20,7 +22,6 @@ class OpenAIResponsesProvider:
             "model": self._model,
             "input": prompt,
             "tool_choice": "auto",
-            "max_output_tokens": self.settings.llm_max_output_tokens,
             "tools": [
                 {
                     "type": "function",
@@ -48,7 +49,10 @@ class OpenAIResponsesProvider:
                                             "items": {"type": "string"},
                                         },
                                         "alt_text": {"type": "string"},
-                                        "media_prompt": {"type": ["string", "null"], "description": "Image generation prompt. Required for Instagram. For other platforms, only include if the user explicitly asked for an image. Set to null for text-only posts."},
+                                        "media_prompt": {
+                                            "type": ["string", "null"],
+                                            "description": "Image generation prompt. Required for Instagram. For other platforms, only include if the user explicitly asked for an image. Set to null for text-only posts.",
+                                        },
                                         "script": {"type": ["string", "null"]},
                                     },
                                     "required": [
@@ -77,11 +81,14 @@ class OpenAIResponsesProvider:
                 response.raise_for_status()
                 data = response.json()
         except httpx.HTTPError as exc:
-            raise RuntimeError(
-                f"LLM provider request failed against {self.settings.llm_base_url}: {exc}"
-            ) from exc
+            raise RuntimeError(f"LLM provider request failed against {self._base_url}: {exc}") from exc
         arguments = self._extract_function_arguments(data, "submit_draft_package")
-        return DraftPackageSubmission.model_validate(arguments)
+        submission = DraftPackageSubmission.model_validate(arguments)
+        if len(submission.drafts) != count:
+            raise ValueError(
+                f"LLM returned {len(submission.drafts)} drafts, but exactly {count} were requested."
+            )
+        return submission
 
     def _client(self) -> httpx.Client:
         headers = {"Content-Type": "application/json"}

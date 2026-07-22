@@ -1,22 +1,27 @@
 """
 Platform profiles — fetch live profile data from APIs, show editable fields.
 """
-import logging
 
+import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Literal
+
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-import httpx
-
 from rebel_forge_backend.api.auth import require_owner
 from rebel_forge_backend.core.config import get_settings
+from rebel_forge_backend.core.integrations import META_GRAPH_API_VERSION, X_API_BASE
 from rebel_forge_backend.db.session import get_db
 from rebel_forge_backend.services.workspace import WorkspaceService
 
 logger = logging.getLogger("rebel_forge_backend.platforms")
 
 router = APIRouter()
+
+PlatformId = Literal["x", "linkedin", "facebook", "instagram", "threads"]
 
 
 class PlatformProfile(BaseModel):
@@ -30,7 +35,19 @@ class PlatformProfile(BaseModel):
 # What each platform API can actually do (verified against official docs)
 PLATFORM_CAPABILITIES = {
     "x": {
-        "can_read": ["name", "username", "description", "profile_image_url", "location", "url", "pinned_tweet_id", "followers_count", "following_count", "tweet_count", "created_at"],
+        "can_read": [
+            "name",
+            "username",
+            "description",
+            "profile_image_url",
+            "location",
+            "url",
+            "pinned_tweet_id",
+            "followers_count",
+            "following_count",
+            "tweet_count",
+            "created_at",
+        ],
         "can_edit": [],  # X API v2 has no profile update endpoint. v1.1 update_profile is deprecated.
         "editable_labels": {},
         "edit_url": "https://x.com/settings/profile",  # Manual edit link
@@ -42,13 +59,29 @@ PLATFORM_CAPABILITIES = {
         "edit_url": "https://www.linkedin.com/me/",  # Redirects logged-in user to their own profile
     },
     "facebook": {
-        "can_read": ["name", "about", "description", "category", "fan_count", "picture", "website", "link"],
+        "can_read": [
+            "name",
+            "about",
+            "description",
+            "category",
+            "fan_count",
+            "picture",
+            "website",
+            "link",
+        ],
         "can_edit": ["about"],  # POST /{page-id}?about=... — limited to 100 chars
         "editable_labels": {"about": "Description (100 chars max)"},
         "edit_url": None,  # Can edit via API
     },
     "instagram": {
-        "can_read": ["username", "name", "biography", "profile_picture_url", "followers_count", "media_count"],
+        "can_read": [
+            "username",
+            "name",
+            "biography",
+            "profile_picture_url",
+            "followers_count",
+            "media_count",
+        ],
         "can_edit": [],  # Instagram Graph API does not support profile editing
         "editable_labels": {},
         "edit_url": "https://www.instagram.com/accounts/edit/",
@@ -65,11 +98,21 @@ PLATFORM_CAPABILITIES = {
 def _fetch_x_profile(settings) -> dict:
     import requests
     from requests_oauthlib import OAuth1
-    auth = OAuth1(settings.x_consumer_key, settings.x_consumer_secret,
-                  settings.x_access_token, settings.x_access_token_secret)
-    r = requests.get("https://api.twitter.com/2/users/me",
-                      params={"user.fields": "name,username,description,profile_image_url,location,url,public_metrics,pinned_tweet_id,created_at"},
-                      auth=auth, timeout=10)
+
+    auth = OAuth1(
+        settings.x_consumer_key,
+        settings.x_consumer_secret,
+        settings.x_access_token,
+        settings.x_access_token_secret,
+    )
+    r = requests.get(
+        f"{X_API_BASE}/users/me",
+        params={
+            "user.fields": "name,username,description,profile_image_url,location,url,public_metrics,pinned_tweet_id,created_at"
+        },
+        auth=auth,
+        timeout=10,
+    )
     if r.status_code == 200:
         data = r.json().get("data", {})
         metrics = data.get("public_metrics", {})
@@ -92,8 +135,11 @@ def _fetch_x_profile(settings) -> dict:
 
 
 def _fetch_linkedin_profile(settings) -> dict:
-    r = httpx.get("https://api.linkedin.com/v2/userinfo",
-                   headers={"Authorization": f"Bearer {settings.linkedin_access_token}"}, timeout=10.0)
+    r = httpx.get(
+        "https://api.linkedin.com/v2/userinfo",
+        headers={"Authorization": f"Bearer {settings.linkedin_access_token}"},
+        timeout=10.0,
+    )
     if r.status_code == 200:
         data = r.json()
         return {
@@ -109,10 +155,14 @@ def _fetch_linkedin_profile(settings) -> dict:
 
 
 def _fetch_facebook_profile(settings) -> dict:
-    r = httpx.get("https://graph.facebook.com/v23.0/me/accounts",
-                   params={"access_token": settings.facebook_access_token,
-                           "fields": "name,about,category,description,fan_count,picture,website,link"},
-                   timeout=10.0)
+    r = httpx.get(
+        f"https://graph.facebook.com/{META_GRAPH_API_VERSION}/me/accounts",
+        params={
+            "access_token": settings.facebook_access_token,
+            "fields": "name,about,category,description,fan_count,picture,website,link",
+        },
+        timeout=10.0,
+    )
     if r.status_code == 200:
         pages = r.json().get("data", [])
         if pages:
@@ -133,10 +183,14 @@ def _fetch_facebook_profile(settings) -> dict:
 
 
 def _fetch_instagram_profile(settings) -> dict:
-    r = httpx.get(f"https://graph.instagram.com/v23.0/{settings.instagram_user_id}",
-                   params={"fields": "id,username,name,biography,profile_picture_url,followers_count,media_count",
-                           "access_token": settings.instagram_access_token},
-                   timeout=10.0)
+    r = httpx.get(
+        f"https://graph.instagram.com/{META_GRAPH_API_VERSION}/{settings.instagram_user_id}",
+        params={
+            "fields": "id,username,name,biography,profile_picture_url,followers_count,media_count",
+            "access_token": settings.instagram_access_token,
+        },
+        timeout=10.0,
+    )
     if r.status_code == 200:
         data = r.json()
         return {
@@ -152,9 +206,11 @@ def _fetch_instagram_profile(settings) -> dict:
 
 
 def _fetch_threads_profile(settings) -> dict:
-    r = httpx.get("https://graph.threads.net/v1.0/me",
-                   params={"fields": "id,username,name", "access_token": settings.threads_access_token},
-                   timeout=10.0)
+    r = httpx.get(
+        f"https://graph.threads.net/{META_GRAPH_API_VERSION}/me",
+        params={"fields": "id,username,name", "access_token": settings.threads_access_token},
+        timeout=10.0,
+    )
     if r.status_code == 200:
         data = r.json()
         username = data.get("username", "")
@@ -175,8 +231,26 @@ PROFILE_FETCHERS = {
 }
 
 
+def _profile_is_configured(platform_id: PlatformId, settings) -> bool:
+    required = {
+        "x": (
+            settings.x_consumer_key,
+            settings.x_consumer_secret,
+            settings.x_access_token,
+            settings.x_access_token_secret,
+        ),
+        "linkedin": (settings.linkedin_access_token,),
+        "facebook": (settings.facebook_access_token,),
+        "instagram": (settings.instagram_access_token, settings.instagram_user_id),
+        "threads": (settings.threads_access_token, settings.threads_user_id),
+    }
+    return all(bool(value) for value in required[platform_id])
+
+
 @router.get("/workspace/platform-profile/{platform_id}")
-def get_platform_profile(platform_id: str, db: Session = Depends(get_db), _role: str = Depends(require_owner)):
+def get_platform_profile(
+    platform_id: PlatformId, db: Session = Depends(get_db), _role: str = Depends(require_owner)
+):
     """Get platform profile — fetches live data from API + saved local data."""
     settings = get_settings()
     workspace = WorkspaceService(settings).get_or_create_primary_workspace(db)
@@ -190,14 +264,16 @@ def get_platform_profile(platform_id: str, db: Session = Depends(get_db), _role:
     # Fetch live profile from platform API
     live_profile = {}
     fetcher = PROFILE_FETCHERS.get(platform_id)
-    if fetcher:
+    if fetcher and _profile_is_configured(platform_id, settings):
         try:
             live_profile = fetcher(settings)
         except Exception as e:
             logger.warning("[platforms] Failed to fetch %s profile: %s", platform_id, e)
 
     # Get capabilities
-    caps = PLATFORM_CAPABILITIES.get(platform_id, {"can_read": [], "can_edit": [], "editable_labels": {}})
+    caps = PLATFORM_CAPABILITIES.get(
+        platform_id, {"can_read": [], "can_edit": [], "editable_labels": {}}
+    )
 
     # Override edit_url with saved profile URL if available
     saved_url = saved_profile.get("profile_url", "")
@@ -217,7 +293,7 @@ def get_platform_profile(platform_id: str, db: Session = Depends(get_db), _role:
 
 @router.put("/workspace/platform-profile/{platform_id}")
 def update_platform_profile(
-    platform_id: str,
+    platform_id: PlatformId,
     payload: PlatformProfile,
     db: Session = Depends(get_db),
     _role: str = Depends(require_owner),
@@ -230,8 +306,8 @@ def update_platform_profile(
     if not bp:
         raise HTTPException(status_code=400, detail="No brand profile found")
 
-    style = bp.style_notes or {}
-    profiles = style.get("platform_profiles", {})
+    style = dict(bp.style_notes or {})
+    profiles = dict(style.get("platform_profiles", {}))
     profiles[platform_id] = payload.model_dump()
     style["platform_profiles"] = profiles
     bp.style_notes = style
@@ -242,7 +318,7 @@ def update_platform_profile(
 
 @router.post("/workspace/platform-profile/{platform_id}/push")
 def push_platform_profile(
-    platform_id: str,
+    platform_id: PlatformId,
     payload: PlatformProfile | None = None,
     db: Session = Depends(get_db),
     _role: str = Depends(require_owner),
@@ -254,8 +330,8 @@ def push_platform_profile(
 
     # If payload provided, save it first
     if payload and bp:
-        style = bp.style_notes or {}
-        profiles = style.get("platform_profiles", {})
+        style = dict(bp.style_notes or {})
+        profiles = dict(style.get("platform_profiles", {}))
         profiles[platform_id] = payload.model_dump()
         style["platform_profiles"] = profiles
         bp.style_notes = style
@@ -266,18 +342,27 @@ def push_platform_profile(
         saved = bp.style_notes.get("platform_profiles", {}).get(platform_id, {})
 
     if not saved:
-        raise HTTPException(status_code=400, detail="No profile data to push. Save the profile first.")
+        raise HTTPException(
+            status_code=400, detail="No profile data to push. Save the profile first."
+        )
 
     caps = PLATFORM_CAPABILITIES.get(platform_id, {"can_edit": []})
     if not caps["can_edit"]:
-        return {"status": "not_supported", "message": f"{platform_id} does not support profile editing via API"}
+        return {
+            "status": "not_supported",
+            "message": f"{platform_id} does not support profile editing via API",
+        }
 
     try:
         if platform_id == "x" and saved.get("bio"):
-            import requests
             from requests_oauthlib import OAuth1
-            auth = OAuth1(settings.x_consumer_key, settings.x_consumer_secret,
-                          settings.x_access_token, settings.x_access_token_secret)
+
+            OAuth1(
+                settings.x_consumer_key,
+                settings.x_consumer_secret,
+                settings.x_access_token,
+                settings.x_access_token_secret,
+            )
             update_data = {}
             if saved.get("bio"):
                 update_data["description"] = saved["bio"][:160]
@@ -286,14 +371,20 @@ def push_platform_profile(
 
             # Note: X API v2 doesn't have a profile update endpoint for user auth
             # Would need X API v1.1 which requires elevated access
-            return {"status": "not_implemented", "message": "X profile update requires elevated API access. Edit manually at x.com/settings/profile"}
+            return {
+                "status": "not_implemented",
+                "message": "X profile update requires elevated API access. Edit manually at x.com/settings/profile",
+            }
 
         elif platform_id == "facebook" and saved.get("bio"):
             page_id = settings.facebook_page_id
             page_token = settings.facebook_page_token
             if page_id and page_token:
-                r = httpx.post(f"https://graph.facebook.com/v23.0/{page_id}",
-                               params={"about": saved["bio"], "access_token": page_token}, timeout=10.0)
+                r = httpx.post(
+                    f"https://graph.facebook.com/{META_GRAPH_API_VERSION}/{page_id}",
+                    params={"about": saved["bio"], "access_token": page_token},
+                    timeout=10.0,
+                )
                 if r.status_code == 200:
                     return {"status": "pushed", "message": "Facebook page About updated"}
                 return {"status": "error", "message": f"Facebook update failed: {r.text[:100]}"}
@@ -315,17 +406,29 @@ def list_platform_profiles(db: Session = Depends(get_db), _role: str = Depends(r
     if bp and bp.style_notes:
         saved = bp.style_notes.get("platform_profiles", {})
 
+    configured = {
+        pid: fetcher
+        for pid, fetcher in PROFILE_FETCHERS.items()
+        if _profile_is_configured(pid, settings)
+    }
     result = {}
-    for pid, fetcher in PROFILE_FETCHERS.items():
-        try:
-            live = fetcher(settings)
+    if not configured:
+        return result
+
+    with ThreadPoolExecutor(max_workers=min(5, len(configured))) as executor:
+        futures = {executor.submit(fetcher, settings): pid for pid, fetcher in configured.items()}
+        for future in as_completed(futures):
+            pid = futures[future]
+            try:
+                live = future.result()
+            except Exception as exc:
+                logger.warning("[platforms] Failed to fetch %s profile: %s", pid, exc)
+                continue
             if live:
                 result[pid] = {
                     "live": live,
                     "saved": saved.get(pid, {}),
                     "editable_fields": PLATFORM_CAPABILITIES.get(pid, {}).get("can_edit", []),
                 }
-        except Exception:
-            pass
 
     return result
