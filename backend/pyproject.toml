@@ -6,26 +6,37 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
   "alembic>=1.15.0",
-  "fastapi>=0.115.0",
+  "boto3>=1.37.0",
+  "botocore>=1.37.0",
+  "fastapi>=0.136.1",
   "httpx>=0.28.0",
-  "pydantic-settings>=2.7.0",
+  "pgvector>=0.4.0",
+  "pydantic>=2.12.0",
+  "pydantic-settings>=2.14.2",
   "psycopg[binary]>=3.2.0",
+  "python-dotenv>=1.1.0",
   "python-slugify>=8.0.4",
   "sqlalchemy>=2.0.36",
   "uvicorn[standard]>=0.34.0",
+  "websocket-client>=1.8.0",
   "requests>=2.32.0",
   "requests-oauthlib>=2.0.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "pytest>=8.3.0",
+  "pytest>=9.0.3",
+  "pytest-cov>=6.0.0",
   "ruff>=0.11.0",
 ]
 
-[tool.uv]
-dev-dependencies = [
-  "pytest>=8.3.0",
+[project.scripts]
+rebel-forge-tokens = "rebel_forge_backend.auth_tokens:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=9.0.3",
+  "pytest-cov>=6.0.0",
   "ruff>=0.11.0",
 ]
 
@@ -36,6 +47,15 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/rebel_forge_backend"]
 
+[tool.uv]
+constraint-dependencies = [
+  "click>=8.3.3",
+  "idna>=3.15",
+  "mako>=1.3.12",
+  "pygments>=2.20.0",
+  "starlette>=1.3.1",
+]
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 
@@ -45,4 +65,7 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
-
+ignore = [
+  "B008", # FastAPI dependency injection is declared in function defaults.
+  "E501", # Ruff format intentionally leaves long strings and SQL literals intact.
+]
