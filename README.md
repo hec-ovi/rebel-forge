@@ -1,258 +1,203 @@
-<h1 align="center">Rebel Forge</h1>
+# Rebel Forge
 
-<p align="center">
-  <strong>The AI agent that runs your social media. Not a dashboard. An autonomous system.</strong>
-</p>
+Rebel Forge is a single-workspace social content application. It combines an agent chat, LLM-backed draft generation, per-platform writing guidance, review and publishing workflows, media generation, and post-publication metrics in a Next.js frontend backed by FastAPI, PostgreSQL, and a separate worker.
 
-<p align="center">
-  <img src="https://img.shields.io/badge/Status-Demo-blue" alt="Status" />
-  <img src="https://img.shields.io/badge/Platforms-5-brightgreen" alt="Platforms" />
-  <img src="https://img.shields.io/badge/Tools-11-orange" alt="Tools" />
-  <img src="https://img.shields.io/badge/Endpoints-65+-purple" alt="Endpoints" />
-  <img src="https://img.shields.io/badge/License-Contact-red" alt="License" />
-</p>
+> **Portfolio and demonstration software:** the source is public for review, but it is not open source. [LICENSE](LICENSE) grants no permission to use, modify, or redistribute the original code without written permission.
 
-<p align="center">
-  <img src="https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi" alt="FastAPI" />
-  <img src="https://img.shields.io/badge/Next.js_16-Frontend-000?logo=nextdotjs" alt="Next.js" />
-  <img src="https://img.shields.io/badge/PostgreSQL-Database-336791?logo=postgresql" alt="PostgreSQL" />
-  <img src="https://img.shields.io/badge/vLLM-Local_Inference-FF6F00" alt="vLLM" />
-  <img src="https://img.shields.io/badge/Codex_CLI-OpenAI-412991?logo=openai" alt="Codex" />
-  <img src="https://img.shields.io/badge/fal.ai-Cloud_Images-000" alt="fal.ai" />
-</p>
+## Current capability
 
-<p align="center">
-  <em>Built in 2 weeks by one engineer with Claude Code + Codex CLI.<br/>For the production version, <a href="https://linkedin.com/in/hec-ovi">contact me</a>.</em>
-</p>
+The table describes the code in this repository. "External" means the workflow is implemented but requires a service or account that is not included in the Compose stack.
 
-<p align="center">
-  <a href="https://www.youtube.com/watch?v=AVQRFr58sTI">
-    <img src="https://img.shields.io/badge/Watch_Demo-YouTube-FF0000?logo=youtube&logoColor=white&style=for-the-badge" alt="Watch Demo on YouTube" />
-  </a>
-</p>
-
----
-
-## One Prompt. Multiple Platforms. The Agent Handles Everything.
-
-Say _"search for AI trends, then make a post for X, LinkedIn, and Threads"_ and the agent:
-
-1. **Searches the web** for current trends
-2. **Recalls your X training** (style guide + corrections + writing patterns)
-3. **Generates an X draft**
-4. **Recalls your LinkedIn training**
-5. **Generates a LinkedIn draft**
-6. **Generates a Threads draft**
-7. **Responds** (with a summary, if applies)
-
-**One message. Six tool calls. Three platform-specific drafts. All in your trained voice.**
-
-<p align="center">
-  <img src="gif/rebel-chat.gif" alt="Rebel Chat — Agentic Tool Chaining" width="700" />
-</p>
-
----
-
-## Why This Exists
-
-Social media tools charge $48-399/mo for calendars and stateless GPT wrappers. They forget everything between sessions.
-
-| Tool | Monthly Cost | Memory? | Self-Hosted? | Autonomous? |
-|------|-------------|---------|-------------|-------------|
-| Hootsuite | $199-399/user | No | No | No |
-| Sprout Social | $199-399/seat | No | No | No |
-| Later | $18-82 | No | No | No |
-| Rella | $24-48 | Basic | No | No |
-| **Rebel Forge** | **$0** | **Per-platform voice memory** | **Yes** | **Yes** |
-
----
-
-## Agentic Tool Loop
-
-The agent chains tools autonomously. Up to 8 steps per turn. It decides what to call, in what order, and when to stop.
-
-| Tool | Purpose |
-|------|---------|
-| `recall_training` | Load platform-specific voice, corrections, and style before generating |
-| `generate_drafts` | Create drafts with auto-approve and auto-publish flags |
-| `web_search` | Search the web for trends, news, context |
-| `generate_image` | Generate images via fal.ai or ComfyUI |
-| `publish_draft` | Publish to any platform (platform-matched draft selection) |
-| `approve_draft` | Approve content for publishing |
-| `run_heartbeat` | Trigger full Scout > Analyst > Creator cycle |
-| `update_brand` | Update voice, audience, goals |
-| `setup_platform` | Generate bio, handle, starter posts |
-| `query_drafts` | Query your drafts database |
-| `save_onboarding` | Save brand profile from onboarding |
-
-Real chains observed in production:
-
-```
-web_search > generate_drafts                                    (2 tools)
-recall_training > generate_drafts                               (2 tools)
-recall_training > web_search > generate_drafts                  (3 tools)
-web_search > generate_drafts > recall_training > generate_drafts (4 tools)
-```
-
-### Tools & Error Recovery
-
-The agent is resilient to mid-chain failures. If any step fails (API timeout, provider error, rate limit), the agent re-spins the failed step and continues from where it left off. No manual intervention, no lost progress — the chain completes even when a middle step is interrupted.
-
-<p align="center">
-  <img src="gif/tools.gif" alt="Agentic Tool Loop — Tools & Error Recovery" width="700" />
-</p>
-
----
-
-## Per-Platform Voice Training
-
-The agent doesn't just remember your brand. It remembers **how you sound on each platform**.
-
-**General Voice** sets the baseline ("No fluff. Write like a builder."). **Per-platform styles** override it ("X: max 2 sentences. LinkedIn: 5 paragraphs with a question."). The agent recalls the right combination before every generation.
-
-| Layer | What It Does | Stored In |
-|-------|-------------|-----------|
-| General Voice | Base rules for all platforms | `platform_styles` (platform=general) |
-| Platform Style Guide | Per-platform tone override | `platform_styles` per platform |
-| User Corrections | Original vs. edited samples with ratings | `corrections` table |
-| Style Learning | Patterns from your real published posts | Learned from fetched post data |
-
-**Same prompt, different platform, different output.** The X draft is 84 characters. The LinkedIn draft is 730.
-
-### Style Learning
-
-Fetch your real posts from any connected platform. Sort by engagement, views, likes, or date. Hit "Learn Style" and the agent absorbs your actual writing patterns — per platform.
-
-The agent uses this when `recall_training` fires: your corrections, your style guide, and your real writing patterns all load before content generation.
-
-<p align="center">
-  <img src="gif/training.gif" alt="Training — Per-Platform Voice Learning" width="700" />
-</p>
-
----
+| Capability | Status | Requirements and boundaries |
+| --- | --- | --- |
+| Owner and viewer access | Implemented | Local bearer tokens are generated on first use and stored in `backend/data/auth_tokens.json`. This is not multi-user authentication. |
+| Workspace and brand profile | Implemented | One logical workspace with one brand context. |
+| Agent chat and tool execution | External | Requires an OpenAI Responses-compatible LLM endpoint, or Codex CLI on the host. Conversation and tool history are stored in PostgreSQL. |
+| Draft generation and review | External | Generation requires an LLM. Editing, approval, rejection, deletion, status tracking, and publication records are implemented. |
+| Calendar | Limited | Displays drafts by creation date. It does not schedule or execute future publication. |
+| Voice training | External | Corrections and platform style guides are persisted. LLM analysis and recommendations require a configured LLM. |
+| Style import | Credential-dependent | Fetch adapters cover X, Facebook, Instagram, and Threads. Each platform requires its own API credentials and permissions. |
+| Web search | Credential-dependent | Uses Firecrawl when `FIRECRAWL_API_KEY` is configured. |
+| Image generation | External | Supports an OpenAI-compatible image endpoint, ComfyUI, and fal.ai. These services are not included in Compose. |
+| Publishing | Credential-dependent | Text publishing is implemented for X, LinkedIn, Facebook, and Threads. Instagram requires an image at a publicly reachable URL, normally through R2 for locally generated media. |
+| Engagement metrics | Limited | Metrics are requested for posts published through Rebel Forge. Live retrieval is implemented for X, Facebook, and Instagram, with the latest successful snapshot retained. LinkedIn and Threads live metrics are not implemented. |
+| Heartbeat automation | External | The worker can run periodic research and draft generation. It requires an LLM and benefits from Firecrawl. Auto-approval and auto-publishing are opt-in. |
+| Share approval links | Limited | Links and expiry data are held in API process memory and are lost on restart. |
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────┐
-│                   REBEL FORGE                       │
-├──────────┬──────────────┬──────────────┬────────────┤
-│ Frontend │   Backend    │   Worker     │  Database  │
-│ Next.js  │   FastAPI    │  Heartbeat   │ PostgreSQL │
-│  :3000   │    :8080     │  + Jobs      │   :5432    │
-└──────────┴──────┬───────┴─────┬────────┴────────────┘
-                  │             │
-         ┌────────┴────────┐    │
-         │  LLM Provider   │    │
-         │  (hot-swap)     │    │
-         ├─────────────────┤    │
-         │ vLLM (local)    │    │
-         │ Codex CLI       │    │
-         │ OpenRouter      │    │
-         └─────────────────┘    │
-                           ┌────┴─────────────┐
-                           │ Image Provider   │
-                           │ (auto-fallback)  │
-                           ├──────────────────┤
-                           │ ComfyUI (local)  │
-                           │ fal.ai (cloud)   │
-                           └──────────────────┘
+```text
+Browser
+  |
+  v
+Next.js :3000  --->  FastAPI :8080  --->  PostgreSQL :5432
+                           |                    ^
+                           v                    |
+                 external providers      worker process
+                 LLM, media, search      jobs and heartbeat
+                 social APIs, R2
 ```
 
-LLM and image providers are **hot-swappable from settings**. ComfyUI down? fal.ai takes over automatically.
+The API is a Python modular monolith. Draft and media generation requests are persisted as jobs, and the worker claims them from PostgreSQL. Important state changes are written to the event log. Assets use local disk by default; R2 is optional for public delivery. The frontend calls the REST API directly and polls persisted state where needed.
 
-### Local Infrastructure
+See [docs/architecture.md](docs/architecture.md) for component boundaries, request flows, persistence, and operational constraints.
 
-Both providers run on local hardware — no cloud bills, no rate limits, no data leaving your machine.
+## Docker quick start
 
-| Service | Repo | What It Does |
-|---------|------|-------------|
-| ![vLLM](https://img.shields.io/badge/vLLM-Local_LLM-FF6F00) | [hec-ovi/vllm-gpt](https://github.com/hec-ovi/vllm-gpt) | GPT-OSS 20B/120B on AMD Strix Halo via ROCm — OpenAI-compatible `/v1/responses` |
-| ![ComfyUI](https://img.shields.io/badge/ComfyUI-Local_Images-9B59B6) | [hec-ovi/comfyui-strix-docker](https://github.com/hec-ovi/comfyui-strix-docker) | FLUX / Stable Diffusion on AMD RDNA 3.5 — verified ROCm Docker setup |
+Requirements: Docker Engine with Compose, ports `3000`, `5432`, and `8080` available, and an external LLM if you want generation features.
 
----
-
-## Publishing
-
-Live, tested, working. The agent publishes from chat with one command.
-
-| Platform | Text | Images | Auto-publish | Live |
-|----------|------|--------|-------------|------|
-| ![X](https://img.shields.io/badge/X-000?logo=x&logoColor=white) | yes | -- | yes | yes |
-| ![LinkedIn](https://img.shields.io/badge/LinkedIn-0A66C2?logo=linkedin&logoColor=white) | yes | -- | yes | yes |
-| ![Facebook](https://img.shields.io/badge/Facebook-1877F2?logo=facebook&logoColor=white) | yes | -- | yes | yes |
-| ![Instagram](https://img.shields.io/badge/Instagram-E4405F?logo=instagram&logoColor=white) | yes | yes | yes | yes |
-| ![Threads](https://img.shields.io/badge/Threads-000?logo=threads&logoColor=white) | yes | -- | yes | yes |
-
----
-
-## Content Management
-
-Masonry layout. Platform icons. Status colors. Inline editing with character limits (280 for X). Approve > Publish workflow with edit-reverts-to-draft safety. Published posts show live permalinks.
-
-<p align="center">
-  <img src="gif/content.gif" alt="Content — Masonry Grid" width="700" />
-</p>
-
----
-
-## Heartbeat
-
-Three agents on an autonomous loop:
-
-```
-Scout    → web search for trends
-Analyst  → reviews past performance
-Creator  → drafts content in your trained voice
+```bash
+git clone https://github.com/hec-ovi/rebel-forge
+cd rebel-forge
+cp backend/.env.example backend/.env
+docker compose up --build -d --wait
+docker compose exec api rebel-forge-tokens
 ```
 
-Runs on a configurable interval. You approve or let it auto-publish.
+The last command prints the local owner and viewer tokens. Open <http://localhost:3000>, use one of those tokens on the login page, and use the owner token for configuration and mutations.
 
----
+| Service | URL |
+| --- | --- |
+| Frontend | <http://localhost:3000> |
+| API | <http://localhost:8080> |
+| OpenAPI UI | <http://localhost:8080/docs> |
+| Health check | <http://localhost:8080/health> |
 
-## API
+Stop the application with `docker compose down`. PostgreSQL and generated assets remain under `backend/data`.
 
-**65+ endpoints.** Full OpenAPI docs at `localhost:8080/docs`.
+The Compose file starts PostgreSQL, the API, the worker, and the frontend. It does not start an LLM, ComfyUI, or any social platform service. The API and worker use host networking so the default loopback provider URLs are intended for a Linux host setup.
 
+## Local development
+
+Requirements: Python 3.12 or later, uv, Node.js 22 with npm, and Docker with Compose.
+
+The development script synchronizes locked dependencies, starts PostgreSQL, applies migrations, and runs the API, worker, and frontend:
+
+```bash
+cp backend/.env.example backend/.env
+./dev.sh
 ```
-POST /v1/chat                           — Agentic chat with 11 tools + multi-step tool loop
-POST /v1/drafts/generate                — Generate platform-specific content
-POST /v1/drafts/{id}/publish            — Publish (platform-matched draft selection)
-POST /v1/training/feedback              — Submit voice corrections with rating
-PUT  /v1/training/platform-styles/{p}   — Set general or per-platform style guides
-GET  /v1/fetch-posts/{platform}         — Fetch your posts with engagement metrics
-POST /v1/training/style-learn           — Learn voice patterns from real posts
-GET  /v1/training/style-learn/{p}       — Get learned style data for a platform
-POST /v1/heartbeat/trigger              — Trigger autonomous agent cycle
+
+In a second terminal, print or create the login tokens:
+
+```bash
+cd backend
+uv run rebel-forge-tokens
 ```
 
----
+For separate processes instead of `dev.sh`, use these terminals after creating `backend/.env`:
 
-## Tech
+```bash
+# Terminal 1: database, dependencies, migrations, and API
+docker compose up -d --wait postgres
+cd backend
+uv sync --locked
+uv run alembic upgrade head
+uv run uvicorn rebel_forge_backend.main:app --host 0.0.0.0 --port 8080 --reload
+```
 
-<p align="center">
-  <img src="https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white" />
-  <img src="https://img.shields.io/badge/TypeScript-5+-3178C6?logo=typescript&logoColor=white" />
-  <img src="https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white" />
-  <img src="https://img.shields.io/badge/Next.js-16-000?logo=nextdotjs&logoColor=white" />
-  <img src="https://img.shields.io/badge/Tailwind-v4-06B6D4?logo=tailwindcss&logoColor=white" />
-  <img src="https://img.shields.io/badge/PostgreSQL-17-336791?logo=postgresql&logoColor=white" />
-  <img src="https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white" />
-</p>
+```bash
+# Terminal 2: worker
+cd backend
+uv run python -m rebel_forge_backend.worker
+```
 
----
+```bash
+# Terminal 3: frontend
+cd frontend
+npm ci
+npm run dev
+```
 
-## Demo
+## Validation
 
-> **This project is at ~60% toward production.** What you see here already works — agentic tool chains, per-platform voice memory, five-platform publishing, error recovery, local inference. Built in 2 weeks by one engineer.
->
-> Looking for someone who builds complex agentic systems, autonomous tooling, and production AI pipelines? That's what I do.
->
-> **[hec-ovi.dev](https://hec-ovi.dev)** | **[linkedin.com/in/hec-ovi](https://linkedin.com/in/hec-ovi)**
+Run backend validation from a clean dependency sync:
 
----
+```bash
+cd backend
+uv sync --locked
+uv run ruff check .
+uv run pytest
+```
 
-<p align="center">
-  <strong>Built by <a href="https://linkedin.com/in/hec-ovi">Hector Oviedo</a></strong><br/>
-  <em>Engineered with AI.</em>
-</p>
+Run frontend linting, type checking, behavioral tests, and a production build:
+
+```bash
+cd frontend
+npm ci
+npm run check
+npm run build
+```
+
+Frontend tests use Vitest, Testing Library, user-event, jsdom, and MSW. They render pages and components, exercise user interactions, and intercept HTTP at the network boundary. Coverage is available with `npm run test:coverage`.
+
+## Configuration
+
+Copy [backend/.env.example](backend/.env.example) before starting. Empty optional credentials disable the related feature rather than creating a mock connection.
+
+| Variables | Purpose |
+| --- | --- |
+| `DATABASE_URL` | PostgreSQL connection used by the API, migrations, and worker. |
+| `DATA_BASE_PATH`, `STORAGE_BASE_PATH`, `PUBLIC_ASSET_BASE_URL` | Token, runtime data, and local asset locations. Relative paths resolve from `backend/`. |
+| `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` | Default OpenAI Responses-compatible LLM. The example points to a host service on port `8000`. |
+| `MEDIA_BASE_URL`, `MEDIA_MODEL`, `MEDIA_API_KEY` | Default OpenAI-compatible image endpoint. |
+| `COMFYUI_BASE_URL`, `FAL_KEY`, `FAL_MODEL` | Optional image providers. |
+| `FIRECRAWL_API_KEY`, `FIRECRAWL_API_URL` | Optional web search. |
+| `X_*`, `LINKEDIN_*`, `FACEBOOK_*`, `INSTAGRAM_*`, `THREADS_*` | Platform credentials for profile access, importing posts, publishing, inbox data, and metrics where supported. |
+| `R2_*` | Optional Cloudflare R2 bucket used to make local media publicly reachable. |
+
+Integration credentials can be entered through the owner-only Settings connection rows or edited in `backend/.env`. There is no OAuth callback flow or automatic token refresh. Updating a connection writes the mounted `.env` file and reports that an API and worker restart is required. Treat that file and `backend/data/auth_tokens.json` as secrets.
+
+The active LLM can also be selected in Settings. That override, including any API key supplied with it, is stored in the PostgreSQL brand profile. Available adapters are vLLM, OpenAI, xAI, OpenRouter, and Codex CLI. The standard backend container does not install the `codex` binary, so Codex CLI is host-only unless you build a custom image.
+
+## API access
+
+Interactive OpenAPI documentation is served at <http://localhost:8080/docs>. Use the `Authorize` control with either generated bearer token. Viewer access is read-only where supported; owner access is required for configuration and state changes.
+
+Useful entry points include:
+
+| Method and path | Purpose |
+| --- | --- |
+| `POST /v1/auth/login` | Exchange a generated token entered as the login password for its role. |
+| `GET /v1/readiness` | Report database, provider, platform, and feature readiness. |
+| `POST /v1/chat` | Run the agent chat and tool loop. |
+| `POST /v1/drafts/generate` | Queue draft generation. |
+| `GET /v1/jobs/{job_id}` | Poll a persisted job. |
+| `POST /v1/media/generate` | Queue media generation. |
+| `POST /v1/drafts/{draft_id}/publish` | Publish an approved draft through a configured adapter. |
+| `GET /v1/drafts/{draft_id}/engagement` | Fetch live or last stored metrics for a published draft. |
+
+## Known limitations
+
+- The product supports one logical workspace and has no user registration, teams, billing, or tenant isolation.
+- Tokens are local shared secrets, not sessions backed by an identity provider.
+- External credentials are entered manually and require the relevant platform permissions.
+- Generative features do not work until an LLM is reachable. No LLM model is bundled.
+- The Docker image does not include Codex CLI.
+- The calendar is a creation-date view, not a scheduler.
+- Real analytics begin only after Rebel Forge successfully publishes a post, and live retrieval is platform-specific.
+- Share approval links are in-memory and disappear when the API restarts. Public share URLs should not be treated as durable access control.
+- Manual heartbeat triggering currently runs in an API-local background thread. Scheduled heartbeat checks run in the worker.
+- The Compose topology uses host networking for the Python services and is optimized for the repository's Linux development environment.
+
+## Demonstrations
+
+### Agent chat and tool execution
+
+![Agent chat demonstration](gif/rebel-chat.gif)
+
+### Tool activity
+
+![Tool activity demonstration](gif/tools.gif)
+
+### Voice training
+
+![Voice training demonstration](gif/training.gif)
+
+### Draft management
+
+![Draft management demonstration](gif/content.gif)
+
+## License
+
+Copyright (c) 2026 Hector Oviedo. All rights reserved. See [LICENSE](LICENSE) for the portfolio-review terms and contact information.
